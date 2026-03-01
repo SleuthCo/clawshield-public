@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClawShield — AI Gateway</title>
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="data:;base64,=">
+    <script type="module" crossorigin src="./assets/index-BeKTXH1m.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DWhx-9JL.css">
+    <script>window.__OPENCLAW_CONTROL_UI_BASE_PATH__="";window.__OPENCLAW_ASSISTANT_NAME__="ClawShield";window.__OPENCLAW_ASSISTANT_AVATAR__="CS";</script>
+    <style>
+      /* ClawShield — deep blue + cyan theme */
+      :root, html, html[data-theme="light"], html[data-theme="dark"] {
+        color-scheme: dark !important;
+        --color-primary: #00d4ff !important;
+        --color-primary-hover: #33dfff !important;
+        --color-bg: #060b18 !important;
+        --color-bg-secondary: #0a1224 !important;
+        --color-surface: #0d1a2f !important;
+        --color-surface-hover: #132440 !important;
+        --color-border: #163058 !important;
+        --color-text: #d0e4ff !important;
+        --color-text-secondary: #7eb0e0 !important;
+        --color-text-muted: #4a7aab !important;
+        --color-success: #00e87b !important;
+        --color-error: #ff3366 !important;
+        --color-warning: #ffaa00 !important;
+        --bg: #060b18 !important;
+        --bg-secondary: #0a1224 !important;
+        --surface: #0d1a2f !important;
+        --border: #163058 !important;
+        --text: #d0e4ff !important;
+        --text-secondary: #7eb0e0 !important;
+        --primary: #00d4ff !important;
+        --accent: #00d4ff !important;
+      }
+      html, body {
+        background: #060b18 !important;
+        color: #d0e4ff !important;
+      }
+    </style>
+    <script>
+      // ClawShield — deep dark mode theme injection
+      // Uses recursive shadow DOM walking + continuous polling
+      // Branding (logo/title/subtitle) is patched at source level in docker-entrypoint.sh
+      (function() {
+        var DARK_CSS = [
+          ':host, *, *::before, *::after { color-scheme: dark !important; }',
+          ':host { --accent: #00d4ff !important; --primary: #00d4ff !important; --bg: #060b18 !important; --bg-secondary: #0a1224 !important; --surface: #0d1a2f !important; --surface-hover: #132440 !important; --border: #163058 !important; --text: #d0e4ff !important; --text-secondary: #7eb0e0 !important; --text-muted: #4a7aab !important; --color-primary: #00d4ff !important; --color-primary-hover: #33dfff !important; --color-bg: #060b18 !important; --color-bg-secondary: #0a1224 !important; --color-surface: #0d1a2f !important; --color-surface-hover: #132440 !important; --color-border: #163058 !important; --color-text: #d0e4ff !important; --color-text-secondary: #7eb0e0 !important; --color-text-muted: #4a7aab !important; --color-success: #00e87b !important; --color-error: #ff3366 !important; --color-warning: #ffaa00 !important; }',
+          ':host, div, main, aside, nav, header, footer, section, article, span, p, li, ul, ol, form, fieldset, label, details, summary { color: #d0e4ff; }',
+          'button, [role="button"], input[type="button"], input[type="submit"], input[type="reset"] { background: #0f2040 !important; color: #00d4ff !important; border-color: #1a3560 !important; }',
+          'button:hover, [role="button"]:hover { background: #153060 !important; border-color: #00d4ff !important; color: #33dfff !important; }',
+          'input, textarea, select { background: #0a1224 !important; border-color: #163058 !important; color: #d0e4ff !important; }',
+          'input:focus, textarea:focus, select:focus { border-color: #00d4ff !important; box-shadow: 0 0 0 2px rgba(0,212,255,.2) !important; outline: none !important; }',
+          'input::placeholder, textarea::placeholder { color: #4a7aab !important; }',
+          'a { color: #00d4ff !important; }',
+          'a:hover { color: #66e5ff !important; }',
+          '[role="tab"] { background: #0f2040 !important; color: #7eb0e0 !important; border-color: #1a3560 !important; }',
+          '[role="tab"][aria-selected="true"], [role="tab"]:hover { background: rgba(0,212,255,.15) !important; color: #00d4ff !important; border-color: #00d4ff !important; }',
+          '[role="menu"], [role="listbox"] { background: #0d1a2f !important; border-color: #163058 !important; color: #d0e4ff !important; }',
+          '[role="menuitem"], [role="option"] { color: #d0e4ff !important; }',
+          '[role="menuitem"]:hover, [role="option"]:hover, [role="option"][aria-selected="true"] { background: rgba(0,212,255,.12) !important; color: #00d4ff !important; }',
+          '[role="dialog"] { background: #0d1a2f !important; border-color: #163058 !important; color: #d0e4ff !important; }',
+          'hr { border-color: #163058 !important; }',
+          'svg { color: inherit !important; }',
+          '::-webkit-scrollbar { width: 6px; height: 6px; }',
+          '::-webkit-scrollbar-track { background: #060b18; }',
+          '::-webkit-scrollbar-thumb { background: #163058; border-radius: 3px; }',
+          '::-webkit-scrollbar-thumb:hover { background: #1a3560; }',
+          'pre, code { background: #0a1224 !important; color: #d0e4ff !important; }',
+          'nav, aside { background: #081020 !important; }',
+          '.card, [class*="card"], [class*="panel"] { background: #0d1a2f !important; border-color: #163058 !important; }',
+          '[aria-selected="true"], .selected, .active { border-color: #00d4ff !important; box-shadow: 0 0 8px rgba(0,212,255,.15) !important; }',
+        ].join('\n');
+        function injectCSS(root) {
+          if (!root || root.querySelector('#cs-dark')) return;
+          var s = document.createElement('style');
+          s.id = 'cs-dark';
+          s.textContent = DARK_CSS;
+          root.appendChild(s);
+        }
+        // Rebrand text inside shadow roots (DOM manipulation)
+        function rebrand(root) {
+          if (!root) return;
+          var titles = root.querySelectorAll('.brand-title');
+          for (var i = 0; i < titles.length; i++) {
+            if (titles[i].textContent !== 'CLAWSHIELD') {
+              titles[i].textContent = 'CLAWSHIELD';
+              titles[i].style.cssText = 'color: #00d4ff !important; letter-spacing: 2px !important; font-weight: 700 !important;';
+            }
+          }
+          var subs = root.querySelectorAll('.brand-sub');
+          for (var i = 0; i < subs.length; i++) {
+            if (subs[i].textContent !== 'AI Security Gateway') {
+              subs[i].textContent = 'AI Security Gateway';
+              subs[i].style.cssText = 'color: #4a7aab !important;';
+            }
+          }
+        }
+        function walkAndInject(node) {
+          if (!node) return;
+          if (node.shadowRoot) {
+            injectCSS(node.shadowRoot);
+            rebrand(node.shadowRoot);
+            var els = node.shadowRoot.querySelectorAll('*');
+            for (var i = 0; i < els.length; i++) {
+              if (els[i].shadowRoot) walkAndInject(els[i]);
+            }
+          }
+          var children = node.querySelectorAll('*');
+          for (var j = 0; j < children.length; j++) {
+            if (children[j].shadowRoot) walkAndInject(children[j]);
+          }
+        }
+        setInterval(function() {
+          var app = document.querySelector('openclaw-app');
+          if (!app) return;
+          walkAndInject(app);
+        }, 500);
+      })();
+    </script>
+  </head>
+  <body>
+    <openclaw-app></openclaw-app>
+  </body>
+</html>

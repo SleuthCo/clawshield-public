@@ -1,0 +1,74 @@
+- name: "Allowlist allows tool"
+  policy: |
+    version: "1.0.0"
+    default_action: deny
+    tools:
+      allowlist:
+        - "cat"
+  action: "cat /etc/passwd"
+  expected: allowed
+
+- name: "Denylist blocks tool"
+  policy: |
+    version: "1.0.0"
+    default_action: allow
+    tools:
+      denylist:
+        - "rm"
+  action: "rm -rf /tmp"
+  expected: denied
+
+- name: "Domain allowlist matches URL"
+  policy: |
+    version: "1.0.0"
+    default_action: deny
+    domains:
+      allowlist:
+        - "https://api.example.com/v1/*"
+  action: "curl https://api.example.com/v1/users"
+  expected: allowed
+
+- name: "Domain denied by default"
+  policy: |
+    version: "1.0.0"
+    default_action: deny
+    domains:
+      allowlist: []
+  action: "curl https://google.com"
+  expected: denied
+
+- name: "Redact pattern matches argument"
+  policy: |
+    version: "1.0.0"
+    default_action: allow
+    arguments:
+      redact_patterns:
+        - "sk_.*"
+  action: "curl -H \"Authorization: sk_abc123\" https://api.example.com"
+  expected: redacted
+
+- name: "JSONPath selector matches and triggers redaction"
+  policy: |
+    version: "1.0.0"
+    default_action: allow
+    arguments:
+      selectors:
+        - "$.token"
+      redact_patterns:
+        - ".*"
+  action: '{"token": "abc123", "user": "admin"}'
+  expected: redacted
+
+- name: "Audit enabled, info level logs decision"
+  policy: |
+    version: "1.0.0"
+    default_action: deny
+    tools:
+      allowlist:
+        - "cat"
+    audit:
+      enabled: true
+      level: info
+  action: "cat /etc/passwd"
+  expected: allowed
+  audit_expected: "info"

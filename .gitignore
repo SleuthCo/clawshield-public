@@ -1,0 +1,65 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/main
+/clawshield-proxy
+/clawshield-fw
+/clawshield-audit
+/clawshield-validate
+firewall/cmd/clawshield-fw/clawshield-fw
+proxy/cmd/clawshield-audit/clawshield-audit
+proxy/cmd/clawshield-proxy/clawshield-proxy
+
+# Go workspace
+/go.work
+/go.work.sum
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Test artifacts
+/test_audit.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/logs/
+
+# Build artifacts
+/bin/
+/dist/
+
+# Setup wizard state
+.setup-state.json
+
+# Compiled cross-platform binaries
+clawshield-proxy-*
+
+# Environment files with secrets
+.env
+standalone/.env
+deploy/.env
+
+# Dev/test utility scripts with hardcoded tokens
+approve-device.js
+test-chat.js
+
+# Favicon source duplicates (originals in static/)
+/favicon-32.png
+/favicon.ico

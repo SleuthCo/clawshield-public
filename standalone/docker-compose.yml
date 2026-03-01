@@ -1,0 +1,39 @@
+services:
+  clawshield:
+    build:
+      context: ..
+      dockerfile: standalone/Dockerfile
+    ports:
+      - "${CLAWSHIELD_PORT:-18801}:18789"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GATEWAY_AUTH_TOKEN=${GATEWAY_AUTH_TOKEN:-}
+    volumes:
+      - audit-data:/var/lib/clawshield
+      - openclaw-agents:/home/clawshield/.openclaw/agents
+      - openclaw-data:/home/clawshield/.openclaw/workspace
+      - openclaw-devices:/home/clawshield/.openclaw/devices
+      - openclaw-sessions:/home/clawshield/.openclaw/sessions
+      - openclaw-skills:/home/clawshield/.openclaw/skills
+    healthcheck:
+      test: wget -qO- http://localhost:18789/api/v1/status || exit 1
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          memory: 512M
+
+volumes:
+  audit-data:
+  openclaw-agents:
+  openclaw-data:
+  openclaw-devices:
+  openclaw-sessions:
+  openclaw-skills:

@@ -1,0 +1,149 @@
+# ClawShield Security Policy — Standalone Mode
+# Deny-by-default: only allowlisted methods pass through
+
+default_action: deny
+
+evaluation_timeout_ms: 150
+
+max_message_bytes: 262144  # 256KB
+
+# --- Access Control ---
+
+allowlist:
+  # Chat
+  - chat.send
+  - chat.stream
+  - chat.cancel
+  - chat.history
+  # Tools & Resources
+  - tools.invoke
+  - tools.list
+  - resources.list
+  - resources.read
+  # Agents
+  - agents.list
+  - agent.identity.get
+  - agent.stats
+  # Sessions
+  - session.list
+  - session.load
+  - session.create
+  - sessions.list
+  # Agent files (workspace/knowledge/instructions)
+  - agents.files.list
+  - agents.files.read
+  - agents.files.write
+  - agents.files.delete
+  # Control UI methods
+  - node.list
+  - device.pair.list
+  - config.get
+  - skills.list
+  - skills.status
+  - skills.install
+  - skills.uninstall
+  - cron.list
+  - cron.create
+  - cron.delete
+  - channels.list
+  - channels.status
+  - health.check
+  - health
+  - status
+  - system-presence
+  - last-heartbeat
+  - models.list
+  - cron.status
+  # Slash notation compatibility
+  - chat/send
+  - chat/stream
+  - chat/history
+  - tools/invoke
+  - tools/list
+  - agents/list
+  - resources/list
+  - resources/read
+  - sessions/list
+  - skills/list
+  - skills/status
+
+denylist:
+  - shell.exec
+  - system.raw
+  - file.write
+  - file.delete
+  - db.query
+  - db.raw_query
+  - web.fetch
+  - process.exec
+  - os.exec
+  - eval
+
+# --- Argument Filters (secrets + PII redaction) ---
+
+arg_filters:
+  - tool: "chat.send"
+    regex: "(api_key|password|token|secret|aws_access_key|private_key)[^\\w]*[=:]?\\s*['\"]?[a-zA-Z0-9/+._-]{20,}['\"]?"
+  - tool: "chat.stream"
+    regex: "(api_key|password|token|secret|aws_access_key|private_key)[^\\w]*[=:]?\\s*['\"]?[a-zA-Z0-9/+._-]{20,}['\"]?"
+  - tool: "tools.invoke"
+    regex: "(api_key|password|token|secret|aws_access_key|private_key)[^\\w]*[=:]?\\s*['\"]?[a-zA-Z0-9/+._-]{20,}['\"]?"
+  - tool: "chat.send"
+    regex: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+  - tool: "chat.stream"
+    regex: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+
+# --- Vulnerability Scanner ---
+
+vuln_scan:
+  enabled: true
+  rules:
+    - sqli
+    - ssrf
+    - path_traversal
+    - command_injection
+    - xss
+
+# --- Prompt Injection Scanner ---
+
+prompt_injection:
+  enabled: true
+  scan_requests: true
+  scan_responses: false
+  canary_tokens: true
+  sensitivity: high
+  trusted_response_tools:
+    - "tools/list"
+    - "resources/list"
+    - "agents/list"
+
+# --- Malware Scanner ---
+
+malware_scan:
+  enabled: true
+  scan_responses: false  # Disabled — entropy check false-positives on base64 chat content
+  checks:
+    - magic_bytes
+    # - entropy  # disabled: false-positives on chat content
+    - signatures
+    - archive_safety
+    - script_detection
+  entropy_threshold: 6.5
+  max_decoded_size: 10485760
+
+# --- OpenClaw-Specific ---
+
+openclaw:
+  gateway_port: 18790
+  proxy_listen: ":18789"
+  auth_token: "env"
+
+  agent_allowlist:
+    - main
+    - anvil
+    - harbor
+    - shield
+    - beacon
+    - lens
+
+  channel_policies: {}

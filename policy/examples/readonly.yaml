@@ -1,0 +1,43 @@
+# Read-Only Mode
+# Allow read operations, block all writes and modifications
+
+version: "1.0.0"
+default_action: deny
+
+tools:
+  allowlist:
+    - "cat"
+    - "less"
+    - "head"
+    - "tail"
+    - "grep"
+    - "find"
+    - "curl"  # read-only HTTP
+    - "wget"
+
+# Explicitly deny dangerous tools
+  denylist:
+    - "rm"
+    - "mv"
+    - "cp"
+    - "chmod"
+    - "chown"
+    - "echo >"
+    - ">"
+    - ">>"
+
+domains:
+  allowlist:
+    - "https://api.example.com/v1/read/*"
+
+arguments:
+  redact_patterns:
+    - "[a-zA-Z0-9+/]{40,}"
+  selectors:
+    - "$.token"
+    - "$.apikey"
+
+audit:
+  enabled: true
+  level: info
+  output: stdout

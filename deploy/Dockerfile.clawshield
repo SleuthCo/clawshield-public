@@ -1,0 +1,25 @@
+# ClawShield proxy — multi-stage build for ARM64
+# CGO_ENABLED=1 required for sqlite3 audit database
+
+FROM golang:1.24-bookworm AS builder
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /clawshield-proxy ./proxy/cmd/clawshield-proxy/
+RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /clawshield-audit ./proxy/cmd/clawshield-audit/
+
+FROM debian:bookworm-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 wget && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -r -s /usr/sbin/nologin -d /var/lib/clawshield clawshield && \
+    mkdir -p /var/lib/clawshield && \
+    chown clawshield:clawshield /var/lib/clawshield
+
+COPY --from=builder /clawshield-proxy /usr/local/bin/clawshield-proxy
+COPY --from=builder /clawshield-audit /usr/local/bin/clawshield-audit
+
+USER clawshield
+ENTRYPOINT ["clawshield-proxy"]

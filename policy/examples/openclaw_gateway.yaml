@@ -1,0 +1,101 @@
+# OpenClaw Gateway Policy — ClawShield HTTP proxy mode
+# Use with: clawshield-proxy --gateway-url http://localhost:18790 --policy this-file.yaml
+
+default_action: deny
+
+evaluation_timeout_ms: 200
+
+allowlist:
+  - read
+  - write
+  - web.fetch
+  - db.query
+  - file.read
+  - file.write
+  - search.query
+  # OpenClaw ACP methods
+  - chat/send
+  - chat/stream
+  - tools/invoke
+  - tools/list
+  - agents/list
+  - resources/list
+  - resources/read
+
+denylist:
+  - shell.exec
+  - system.raw
+
+arg_filters:
+  - tool: "db.query"
+    regex: "(api_key|password|token|secret)[^\\w]*[=:]?['\"]?[a-zA-Z0-9._-]{20,}['\"]?"
+  - tool: "web.fetch"
+    regex: "(api_key|password|token|secret)[^\\w]*[=:]?['\"]?[a-zA-Z0-9._-]{20,}['\"]?"
+  - tool: "tools/invoke"
+    regex: "(api_key|password|token|secret)[^\\w]*[=:]?['\"]?[a-zA-Z0-9._-]{20,}['\"]?"
+
+domain_allowlist:
+  - "*.github.com"
+  - "api.openai.com"
+  - "api.anthropic.com"
+
+max_message_bytes: 1048576
+
+# --- Security Scanners ---
+
+vuln_scan:
+  enabled: true
+  rules:
+    - sqli
+    - ssrf
+    - path_traversal
+    - command_injection
+    - xss
+  exclude_tools:
+    - "db.raw_query"
+
+prompt_injection:
+  enabled: true
+  scan_requests: true
+  scan_responses: true
+  canary_tokens: false
+  sensitivity: medium
+  trusted_response_tools:
+    - "tools/list"
+    - "resources/list"
+    - "agents/list"
+
+malware_scan:
+  enabled: true
+  checks:
+    - magic_bytes
+    - entropy
+    - signatures
+    - archive_safety
+    - script_detection
+  entropy_threshold: 7.0
+  max_decoded_size: 10485760
+
+# --- OpenClaw-Specific Configuration ---
+
+openclaw:
+  gateway_port: 18790
+  proxy_listen: ":18789"
+  auth_token: "auto"           # "auto" = read from openclaw config
+
+  # Which agents can be invoked (empty = all allowed)
+  agent_allowlist:
+    - friday
+    - pepper
+    - nimbus
+    - sentinel
+    - coda
+
+  # Per-channel tool restrictions
+  channel_policies:
+    slack:
+      allowed_tools: [search, read, web.fetch, db.query]
+      blocked_tools: [shell.exec, system.raw]
+    telegram:
+      allowed_tools: [search, read]
+      blocked_tools: [shell.exec, system.raw, file.write, db.query]

@@ -1,0 +1,29 @@
+# ClawShield Firewall Configuration
+# This config generates iptables rules for WSL2 egress control
+
+# Domains to allow (will be resolved to IPs)
+allowed_domains:
+  - "api.telegram.org"
+  - "api.anthropic.com"
+  - "gateway.molt.bot"
+  - "github.com"
+  - "api.github.com"
+  - "raw.githubusercontent.com"
+
+# Direct IPs (when DNS returns IPv6 but agents need IPv4)
+allowed_ips:
+  # Telegram data centers (IPv4)
+  - "149.154.166.110"
+  - "149.154.167.220"
+  - "149.154.175.50"
+
+  # Anthropic API (IPv4)
+  - "160.79.104.10"
+
+  # Meta CDN (used by OpenClaw, IPv4)
+  - "157.240.245.60"
+
+# DNS resolvers (allows DNS queries to these IPs)
+dns_resolvers:
+  - "8.8.8.8"        # Google DNS
+  - "1.1.1.1"        # Cloudflare DNS

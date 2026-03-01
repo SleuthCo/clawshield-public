@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClawShield</title>
+<link rel="icon" href="data:;base64,=">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#060b18;--surface:#0d1a2f;--border:#163058;
+  --primary:#00d4ff;--success:#00e87b;--danger:#ff3366;--warning:#ffaa00;
+  --text:#d0e4ff;--muted:#4a7aab;--dim:#1a3560;
+}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+a{color:var(--primary);text-decoration:none}
+
+/* Header */
+.header{display:flex;align-items:center;padding:0 16px;height:48px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px;letter-spacing:1px;color:var(--primary)}
+.logo img{width:32px;height:32px;object-fit:contain}
+.tabs{display:flex;gap:2px;margin-left:32px}
+.tab{padding:8px 16px;border-radius:6px 6px 0 0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted);border:1px solid transparent;border-bottom:none;transition:all .15s;user-select:none}
+.tab:hover{color:var(--text);background:rgba(0,217,255,.05)}
+.tab.active{color:var(--primary);background:var(--bg);border-color:var(--border)}
+.tab kbd{font-size:10px;padding:1px 4px;border-radius:3px;background:var(--dim);color:var(--muted);margin-left:4px;font-family:inherit}
+.status{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--success);box-shadow:0 0 6px var(--success)}
+.status-dot.offline{background:var(--danger);box-shadow:0 0 6px var(--danger)}
+
+/* Content */
+.content{flex:1;overflow:hidden;position:relative}
+.panel{position:absolute;inset:0;display:none;flex-direction:column}
+.panel.active{display:flex}
+
+/* Chat panel */
+#chat-panel iframe{width:100%;height:100%;border:none}
+
+/* Logs panel */
+.logs-toolbar{display:flex;align-items:center;gap:12px;padding:8px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.logs-toolbar input,.logs-toolbar select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px}
+.logs-toolbar input{width:200px}
+.logs-toolbar select{min-width:100px}
+.logs-toolbar label{font-size:12px;color:var(--muted)}
+.log-table-wrap{flex:1;overflow:auto;padding:0 16px 16px}
+table{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
+th{position:sticky;top:0;background:var(--surface);text-align:left;padding:8px 6px;color:var(--muted);font-weight:600;text-transform:uppercase;font-size:11px;letter-spacing:.5px;border-bottom:1px solid var(--border)}
+td{padding:6px;border-bottom:1px solid rgba(30,41,59,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px}
+tr:hover td{background:rgba(0,217,255,.03)}
+col.c-time{width:85px}col.c-tool{width:180px}col.c-dec{width:70px}col.c-reason{width:auto}col.c-scanner{width:80px}
+.badge{padding:2px 6px;border-radius:3px;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.badge-allow{background:rgba(0,255,136,.12);color:var(--success)}
+.badge-deny{background:rgba(255,51,102,.12);color:var(--danger)}
+.badge-redacted{background:rgba(255,170,0,.12);color:var(--warning)}
+.empty-state{text-align:center;padding:48px;color:var(--muted);font-size:14px}
+
+/* Status panel */
+.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px;overflow:auto}
+@media(max-width:700px){.status-grid{grid-template-columns:1fr}}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px}
+.card h3{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:12px}
+.agent-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(30,41,59,.3)}
+.agent-row:last-child{border-bottom:none}
+.agent-name{font-weight:600;font-size:13px;min-width:100px}
+.agent-role{font-size:12px;color:var(--muted);flex:1}
+.scanner-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(30,41,59,.3)}
+.scanner-row:last-child{border-bottom:none}
+.scanner-name{font-weight:600;font-size:13px}
+.scanner-badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:3px}
+.scanner-on{background:rgba(0,255,136,.12);color:var(--success)}
+.scanner-off{background:rgba(100,116,139,.12);color:var(--muted)}
+.stat-row{display:flex;justify-content:space-between;padding:6px 0;font-size:13px}
+.stat-value{font-weight:700;color:var(--primary);font-family:'Cascadia Code','Fira Code',monospace}
+
+/* Footer */
+.footer{display:flex;align-items:center;padding:0 16px;height:32px;background:var(--surface);border-top:1px solid var(--border);font-size:11px;color:var(--muted);flex-shrink:0;gap:16px}
+.footer .scanner-pills{display:flex;gap:8px}
+.footer .pill{display:flex;align-items:center;gap:4px}
+.footer .pill-dot{width:6px;height:6px;border-radius:50%}
+.footer .pill-dot.on{background:var(--success)}
+.footer .pill-dot.off{background:var(--muted)}
+.footer .stats{margin-left:auto;display:flex;gap:16px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">
+    <img src="/static/logo.png" alt="ClawShield">
+    CLAWSHIELD
+  </div>
+  <div class="tabs">
+    <div class="tab active" data-tab="chat">Chat <kbd>1</kbd></div>
+    <div class="tab" data-tab="logs">Logs <kbd>2</kbd></div>
+    <div class="tab" data-tab="status">Status <kbd>3</kbd></div>
+  </div>
+  <div class="status">
+    <span class="status-dot" id="status-dot"></span>
+    <span id="status-text">Connecting...</span>
+  </div>
+</div>
+
+<div class="content">
+  <!-- Chat Tab -->
+  <div id="chat-panel" class="panel active">
+    <iframe id="chat-iframe" src="/control-ui/" loading="lazy"></iframe>
+  </div>
+
+  <!-- Logs Tab -->
+  <div id="logs-panel" class="panel">
+    <div class="logs-toolbar">
+      <label>Filter:</label>
+      <input type="text" id="log-filter" placeholder="Search tool, reason...">
+      <select id="log-decision-filter">
+        <option value="">All Decisions</option>
+        <option value="allow">Allow</option>
+        <option value="deny">Deny</option>
+        <option value="redacted">Redacted</option>
+      </select>
+      <select id="log-scanner-filter">
+        <option value="">All Scanners</option>
+        <option value="injection">Injection</option>
+        <option value="vuln">Vuln</option>
+        <option value="malware">Malware</option>
+        <option value="scope">Scope</option>
+      </select>
+      <label style="margin-left:auto"><input type="checkbox" id="log-auto" checked> Auto-refresh</label>
+    </div>
+    <div class="log-table-wrap">
+      <table>
+        <colgroup><col class="c-time"><col class="c-tool"><col class="c-dec"><col class="c-reason"><col class="c-scanner"></colgroup>
+        <thead><tr><th>Time</th><th>Tool / Method</th><th>Decision</th><th>Reason</th><th>Scanner</th></tr></thead>
+        <tbody id="log-body"></tbody>
+      </table>
+      <div id="log-empty" class="empty-state" style="display:none">No audit events yet. Start chatting to generate activity.</div>
+    </div>
+  </div>
+
+  <!-- Status Tab -->
+  <div id="status-panel" class="panel">
+    <div class="status-grid">
+      <div class="card">
+        <h3>Agents</h3>
+        <div id="agent-list">
+          <div class="empty-state">Loading...</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Security Scanners</h3>
+        <div id="scanner-list">
+          <div class="scanner-row"><span class="scanner-name">Prompt Injection</span><span class="scanner-badge scanner-on" id="sc-injection">Active</span></div>
+          <div class="scanner-row"><span class="scanner-name">Vulnerability</span><span class="scanner-badge scanner-on" id="sc-vuln">Active</span></div>
+          <div class="scanner-row"><span class="scanner-name">Malware</span><span class="scanner-badge scanner-on" id="sc-malware">Active</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Session</h3>
+        <div id="session-info">
+          <div class="stat-row"><span>Session ID</span><span class="stat-value" id="st-session">-</span></div>
+          <div class="stat-row"><span>Uptime</span><span class="stat-value" id="st-uptime">-</span></div>
+          <div class="stat-row"><span>Policy</span><span class="stat-value">deny-by-default</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Event Summary</h3>
+        <div id="event-summary">
+          <div class="stat-row"><span>Total Events</span><span class="stat-value" id="st-total">0</span></div>
+          <div class="stat-row"><span>Allowed</span><span class="stat-value" style="color:var(--success)" id="st-allowed">0</span></div>
+          <div class="stat-row"><span>Denied</span><span class="stat-value" style="color:var(--danger)" id="st-denied">0</span></div>
+          <div class="stat-row"><span>Redacted</span><span class="stat-value" style="color:var(--warning)" id="st-redacted">0</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  <div class="scanner-pills">
+    <span class="pill"><span class="pill-dot on" id="fp-injection"></span> Injection</span>
+    <span class="pill"><span class="pill-dot on" id="fp-vuln"></span> Vuln</span>
+    <span class="pill"><span class="pill-dot on" id="fp-malware"></span> Malware</span>
+  </div>
+  <div class="stats">
+    <span>Events: <strong id="ft-events">0</strong></span>
+    <span>Blocked: <strong id="ft-blocked" style="color:var(--danger)">0</strong></span>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // --- Tab switching ---
+  const tabs = document.querySelectorAll('.tab');
+  const panels = document.querySelectorAll('.panel');
+
+  function switchTab(name) {
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    panels.forEach(p => p.classList.toggle('active', p.id === name + '-panel'));
+    if (name === 'logs' && autoRefresh) fetchLogs();
+    if (name === 'status') fetchStatus();
+  }
+
+  tabs.forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === '1') switchTab('chat');
+    else if (e.key === '2') switchTab('logs');
+    else if (e.key === '3') switchTab('status');
+  });
+
+  // --- Connection status ---
+  const statusDot = document.getElementById('status-dot');
+  const statusText = document.getElementById('status-text');
+  let online = false;
+
+  async function checkHealth() {
+    try {
+      const r = await fetch('/api/v1/status');
+      if (r.ok) {
+        const data = await r.json();
+        if (!online) {
+          online = true;
+          statusDot.classList.remove('offline');
+          statusText.textContent = 'Online';
+        }
+        updateStatusPanel(data);
+      } else {
+        setOffline();
+      }
+    } catch {
+      setOffline();
+    }
+  }
+
+  function setOffline() {
+    if (online || statusText.textContent === 'Connecting...') {
+      online = false;
+      statusDot.classList.add('offline');
+      statusText.textContent = 'Offline';
+    }
+  }
+
+  checkHealth();
+  setInterval(checkHealth, 5000);
+
+  // --- Audit logs ---
+  const logBody = document.getElementById('log-body');
+  const logEmpty = document.getElementById('log-empty');
+  const filterInput = document.getElementById('log-filter');
+  const decisionFilter = document.getElementById('log-decision-filter');
+  const scannerFilter = document.getElementById('log-scanner-filter');
+  const autoCheck = document.getElementById('log-auto');
+  let autoRefresh = true;
+  let allLogs = [];
+  let totalEvents = 0;
+  let blockedEvents = 0;
+
+  autoCheck.addEventListener('change', () => { autoRefresh = autoCheck.checked; });
+  filterInput.addEventListener('input', renderLogs);
+  decisionFilter.addEventListener('change', renderLogs);
+  scannerFilter.addEventListener('change', renderLogs);
+
+  async function fetchLogs() {
+    try {
+      const r = await fetch('/api/v1/audit?limit=500');
+      if (!r.ok) return;
+      allLogs = await r.json();
+      totalEvents = allLogs.length;
+      blockedEvents = allLogs.filter(e => e.decision === 'deny').length;
+      document.getElementById('ft-events').textContent = totalEvents;
+      document.getElementById('ft-blocked').textContent = blockedEvents;
+      renderLogs();
+    } catch { /* ignore */ }
+  }
+
+  function renderLogs() {
+    const text = filterInput.value.toLowerCase();
+    const dec = decisionFilter.value;
+    const sc = scannerFilter.value;
+
+    const filtered = allLogs.filter(e => {
+      if (dec && e.decision !== dec) return false;
+      if (sc && e.scanner_type !== sc) return false;
+      if (text && !(e.tool || '').toLowerCase().includes(text) && !(e.reason || '').toLowerCase().includes(text)) return false;
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      logBody.innerHTML = '';
+      logEmpty.style.display = 'block';
+      return;
+    }
+    logEmpty.style.display = 'none';
+
+    const html = filtered.map(e => {
+      const t = new Date(e.timestamp);
+      const time = t.toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
+      const cls = e.decision === 'allow' ? 'badge-allow' : e.decision === 'deny' ? 'badge-deny' : 'badge-redacted';
+      const scanner = e.scanner_type ? e.scanner_type : '-';
+      return '<tr>' +
+        '<td>' + time + '</td>' +
+        '<td title="' + esc(e.tool) + '">' + esc(e.tool) + '</td>' +
+        '<td><span class="badge ' + cls + '">' + esc(e.decision) + '</span></td>' +
+        '<td title="' + esc(e.reason) + '">' + esc(e.reason) + '</td>' +
+        '<td>' + esc(scanner) + '</td>' +
+        '</tr>';
+    }).join('');
+    logBody.innerHTML = html;
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  fetchLogs();
+  setInterval(() => { if (autoRefresh) fetchLogs(); }, 2000);
+
+  // --- Status panel ---
+  const agentMeta = {
+    anvil:    {role: 'Developer', color: '#00d9ff'},
+    harbor:   {role: 'Cloud & Infrastructure', color: '#a78bfa'},
+    shield:   {role: 'Security', color: '#ff3366'},
+    beacon:   {role: 'Communications', color: '#ffaa00'},
+    lens:     {role: 'Research & Analysis', color: '#00ff88'},
+    friday:   {role: 'Lead Developer', color: '#00d9ff'},
+    nimbus:   {role: 'Cloud & Infrastructure', color: '#a78bfa'},
+    sentinel: {role: 'Security Architect', color: '#ff3366'},
+    pepper:   {role: 'Communications', color: '#ffaa00'},
+    coda:     {role: 'Research & Analysis', color: '#00ff88'}
+  };
+
+  function updateStatusPanel(data) {
+    if (!data) return;
+
+    // Agents
+    if (data.agents && data.agents.length > 0) {
+      const agentHtml = data.agents.map(a => {
+        const meta = agentMeta[a] || {role: 'Agent', color: '#64748b'};
+        return '<div class="agent-row">' +
+          '<span class="status-dot" style="width:6px;height:6px;background:' + meta.color + ';box-shadow:0 0 4px ' + meta.color + '"></span>' +
+          '<span class="agent-name">' + esc(a) + '</span>' +
+          '<span class="agent-role">' + meta.role + '</span>' +
+          '</div>';
+      }).join('');
+      document.getElementById('agent-list').innerHTML = agentHtml;
+    }
+
+    // Scanners
+    if (data.scanners) {
+      updateScanner('sc-injection', 'fp-injection', data.scanners.injection);
+      updateScanner('sc-vuln', 'fp-vuln', data.scanners.vuln);
+      updateScanner('sc-malware', 'fp-malware', data.scanners.malware);
+    }
+
+    // Session info
+    if (data.sessionId) {
+      document.getElementById('st-session').textContent = data.sessionId.substring(0, 20) + '...';
+      document.getElementById('st-session').title = data.sessionId;
+    }
+    if (data.uptime) {
+      document.getElementById('st-uptime').textContent = formatUptime(data.uptime);
+    }
+
+    // Event summary from logs
+    document.getElementById('st-total').textContent = totalEvents;
+    document.getElementById('st-allowed').textContent = totalEvents - blockedEvents;
+    document.getElementById('st-denied').textContent = blockedEvents;
+    const redacted = allLogs.filter(e => e.decision === 'redacted').length;
+    document.getElementById('st-redacted').textContent = redacted;
+  }
+
+  function updateScanner(badgeId, pillId, active) {
+    const badge = document.getElementById(badgeId);
+    const pill = document.getElementById(pillId);
+    if (active) {
+      badge.textContent = 'Active';
+      badge.className = 'scanner-badge scanner-on';
+      pill.className = 'pill-dot on';
+    } else {
+      badge.textContent = 'Off';
+      badge.className = 'scanner-badge scanner-off';
+      pill.className = 'pill-dot off';
+    }
+  }
+
+  function formatUptime(seconds) {
+    if (seconds < 60) return seconds + 's';
+    if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return h + 'h ' + m + 'm';
+  }
+
+  async function fetchStatus() {
+    try {
+      const r = await fetch('/api/v1/status');
+      if (r.ok) updateStatusPanel(await r.json());
+    } catch { /* ignore */ }
+  }
+})();
+</script>
+</body>
+</html>

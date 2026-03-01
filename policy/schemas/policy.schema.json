@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ClawShield Security Policy Schema",
+  "description": "Schema for ClawShield security policy YAML files.",
+  "type": "object",
+  "required": ["default_action"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Optional policy version identifier."
+    },
+    "default_action": {
+      "type": "string",
+      "enum": ["allow", "deny"]
+    },
+    "allowlist": {
+      "type": "array",
+      "description": "Tools that are explicitly allowed.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "denylist": {
+      "type": "array",
+      "description": "Tools that are explicitly denied (checked before allowlist).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "domain_allowlist": {
+      "type": "array",
+      "description": "Domains allowed for web.* tool calls. Supports wildcard prefix (e.g. *.example.com).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "arg_filters": {
+      "type": "array",
+      "description": "Regex filters applied to tool arguments to detect sensitive data.",
+      "items": {
+        "type": "object",
+        "required": ["tool", "regex"],
+        "properties": {
+          "tool": {
+            "type": "string",
+            "description": "Tool name to apply the filter to."
+          },
+          "regex": {
+            "type": "string",
+            "description": "Regular expression pattern to match against arguments."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "evaluation_timeout_ms": {
+      "type": "integer",
+      "description": "Maximum time in milliseconds for policy evaluation per message.",
+      "default": 100,
+      "minimum": 1
+    },
+    "max_message_bytes": {
+      "type": "integer",
+      "description": "Maximum size of incoming JSON-RPC messages in bytes.",
+      "default": 1048576,
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,185 @@
+#cloud-config
+# ClawShield OCI VM provisioning — Ubuntu 24.04 ARM64
+# Hardened for pen-test readiness
+
+users:
+  - name: deploy
+    groups: docker, sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - ssh-ed25519 YOUR_PUBLIC_KEY_HERE you@example.com
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - docker.io
+  - docker-compose-v2
+  - certbot
+  - fail2ban
+  - auditd
+  - audispd-plugins
+  - nftables
+  - unattended-upgrades
+  - ca-certificates
+  - curl
+  - jq
+
+write_files:
+  # SSH hardening
+  - path: /etc/ssh/sshd_config.d/99-hardened.conf
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      MaxAuthTries 3
+      MaxSessions 3
+      AllowUsers deploy
+      X11Forwarding no
+      AllowAgentForwarding no
+      AllowTcpForwarding no
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+      LoginGraceTime 30
+
+  # fail2ban SSH jail
+  - path: /etc/fail2ban/jail.d/custom.conf
+    content: |
+      [sshd]
+      enabled = true
+      port = ssh
+      maxretry = 3
+      bantime = 86400
+      findtime = 600
+
+      [nginx-limit-req]
+      enabled = true
+      port = http,https
+      logpath = /var/log/nginx-docker/access.log
+      maxretry = 10
+      bantime = 3600
+      findtime = 60
+
+  # auditd rules
+  - path: /etc/audit/rules.d/clawshield.rules
+    content: |
+      # SSH config modifications
+      -w /etc/ssh/sshd_config -p wa -k ssh_config
+      -w /etc/ssh/sshd_config.d/ -p wa -k ssh_config
+      # Docker socket access
+      -w /var/run/docker.sock -p rwxa -k docker_socket
+      # ClawShield directory
+      -w /opt/clawshield/ -p wa -k clawshield_files
+      # All execve syscalls
+      -a always,exit -F arch=b64 -S execve -k exec_log
+      # Unauthorized access attempts
+      -a always,exit -F arch=b64 -S open,openat -F exit=-EACCES -k access_denied
+      -a always,exit -F arch=b64 -S open,openat -F exit=-EPERM -k access_denied
+
+  # sysctl hardening
+  - path: /etc/sysctl.d/99-clawshield.conf
+    content: |
+      # Reverse path filtering
+      net.ipv4.conf.all.rp_filter = 1
+      net.ipv4.conf.default.rp_filter = 1
+      # SYN cookies
+      net.ipv4.tcp_syncookies = 1
+      # No ICMP redirects
+      net.ipv4.conf.all.accept_redirects = 0
+      net.ipv4.conf.default.accept_redirects = 0
+      net.ipv4.conf.all.send_redirects = 0
+      net.ipv4.conf.default.send_redirects = 0
+      # No source routing
+      net.ipv4.conf.all.accept_source_route = 0
+      net.ipv4.conf.default.accept_source_route = 0
+      # Disable IPv6
+      net.ipv6.conf.all.disable_ipv6 = 1
+      net.ipv6.conf.default.disable_ipv6 = 1
+      # Restrict ptrace
+      kernel.yama.ptrace_scope = 2
+      # Full ASLR
+      kernel.randomize_va_space = 2
+      # Restrict dmesg
+      kernel.dmesg_restrict = 1
+      # Restrict kernel pointers
+      kernel.kptr_restrict = 2
+
+  # nftables firewall
+  - path: /etc/nftables.conf
+    content: |
+      #!/usr/sbin/nft -f
+      flush ruleset
+
+      table inet filter {
+        chain input {
+          type filter hook input priority 0; policy drop;
+
+          # Established/related
+          ct state established,related accept
+          ct state invalid drop
+
+          # Loopback
+          iif lo accept
+
+          # SSH rate-limited
+          tcp dport 22 ct state new limit rate 4/minute accept
+
+          # HTTP/HTTPS
+          tcp dport { 80, 443 } accept
+
+          # ICMP (limited)
+          ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } limit rate 5/second accept
+
+          # Log and drop everything else
+          log prefix "nftables-drop: " limit rate 5/minute
+          drop
+        }
+
+        chain forward {
+          type filter hook forward priority 0; policy drop;
+          # Docker manages its own forward rules
+          ct state established,related accept
+        }
+
+        chain output {
+          type filter hook output priority 0; policy accept;
+        }
+      }
+
+runcmd:
+  # Enable and start services
+  - systemctl enable --now docker
+  - systemctl enable --now fail2ban
+  - systemctl enable --now auditd
+  - systemctl enable --now nftables
+  - systemctl enable --now unattended-upgrades
+  - systemctl restart sshd
+
+  # Apply sysctl
+  - sysctl --system
+
+  # Load nftables
+  - nft -f /etc/nftables.conf
+
+  # Reload auditd rules
+  - augenrules --load
+
+  # Create application directories
+  - mkdir -p /opt/clawshield/{config,data,logs,certs,nginx/conf.d}
+  - mkdir -p /var/log/nginx-docker
+  - chown -R deploy:deploy /opt/clawshield
+  - chown deploy:deploy /var/log/nginx-docker
+  - chmod 750 /opt/clawshield
+  - chmod 700 /opt/clawshield/config
+
+  # Disable ubuntu default user SSH if it exists
+  - |
+    if id ubuntu &>/dev/null; then
+      usermod -s /usr/sbin/nologin ubuntu
+      rm -f /home/ubuntu/.ssh/authorized_keys
+    fi
+
+  # Remove unnecessary packages
+  - apt-get purge -y telnet rsh-client
+  - apt-get autoremove -y

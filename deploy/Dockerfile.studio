@@ -1,0 +1,144 @@
+# OpenClaw Studio — multi-stage Docker build
+# Builds Next.js app from local source tarball
+
+# --- Builder stage ---
+FROM node:22-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy source (from studio-src/ context)
+COPY . .
+
+# Patch access-gate.js: add Secure flag to cookie for HTTPS
+RUN sed -i 's/HttpOnly; Path=\/; SameSite=Lax/HttpOnly; Secure; Path=\/; SameSite=Lax/' \
+    server/access-gate.js
+
+# Patch access-gate.js: inject HMAC ticket validation for ClawShield deep-links.
+# Inserts _validateTicket() at module top, then a call inside handleHttp().
+# access-gate.js structure: createAccessGate(options) { handleHttp(req,res) {...} }
+COPY <<'TICKET_PATCH' /tmp/ticket-patch.js
+const fs = require('fs');
+const path = 'server/access-gate.js';
+let src = fs.readFileSync(path, 'utf8');
+
+// Step 1: Inject _validateTicket function + crypto require at the top of the file
+const ticketFn = `// --- ClawShield deep-link ticket validation (injected) ---
+const _crypto = require('crypto');
+function _validateTicket(req, res, cookieName, token) {
+  const host = req.headers?.host || 'localhost';
+  const url = new URL(req.url || '/', 'http://' + host);
+  const ticketB64 = url.searchParams.get('ticket');
+  if (!ticketB64) return false;
+  const studioToken = process.env.STUDIO_ACCESS_TOKEN;
+  if (!studioToken) return false;
+  try {
+    const raw = Buffer.from(ticketB64, 'base64url').toString('utf8');
+    const parts = raw.split('|');
+    if (parts.length !== 4) return false;
+    const [agent, timestamp, nonce, signature] = parts;
+    const payload = agent + '|' + timestamp + '|' + nonce;
+    const mac = _crypto.createHmac('sha256', studioToken);
+    mac.update(payload);
+    const expected = mac.digest('hex');
+    if (!_crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'))) return false;
+    const ts = parseInt(timestamp, 10);
+    if (isNaN(ts) || Math.abs(Date.now() / 1000 - ts) > 300) return false;
+    const cookieValue = cookieName + '=' + token + '; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=86400';
+    res.statusCode = 302;
+    res.setHeader('Set-Cookie', cookieValue);
+    url.searchParams.delete('ticket');
+    url.searchParams.delete('agent');
+    url.searchParams.set('agent', agent);
+    const proto = String(req.headers?.['x-forwarded-proto'] || '').toLowerCase() === 'https' ? 'https' : 'http';
+    res.setHeader('Location', proto + '://' + host + url.pathname + url.search);
+    res.end();
+    return true;
+  } catch (e) { return false; }
+}
+// --- end ticket validation ---
+`;
+src = ticketFn + '\n' + src;
+
+// Step 2: Inject ticket check inside handleHttp, right after its opening
+// Pattern: "const handleHttp = (req, res) => {"
+const handleIdx = src.indexOf('const handleHttp = (req, res) => {');
+if (handleIdx === -1) {
+  console.error('Could not find handleHttp in access-gate.js');
+  process.exit(1);
+}
+const braceIdx = src.indexOf('{', handleIdx);
+const ticketCall = '\n    if (_validateTicket(req, res, cookieName, token)) return true;\n';
+src = src.slice(0, braceIdx + 1) + ticketCall + src.slice(braceIdx + 1);
+
+fs.writeFileSync(path, src, 'utf8');
+console.log('Ticket validation injected into access-gate.js (handleHttp)');
+TICKET_PATCH
+RUN node /tmp/ticket-patch.js && rm /tmp/ticket-patch.js
+
+# Patch: wrap client page in Suspense for production build (useSearchParams requires it)
+RUN mv src/app/page.tsx src/app/HomeClient.tsx && \
+    printf 'import { Suspense } from "react";\nimport HomeClient from "./HomeClient";\nexport const dynamic = "force-dynamic";\nexport default function Page() {\n  return <Suspense><HomeClient /></Suspense>;\n}\n' > src/app/page.tsx
+
+# Patch: RovoClaw / Atlassian theme
+# rovo-theme.css must be in build context (studio-src/) — copy before build:
+#   cp rovo-theme.css studio-src/rovo-theme.css
+COPY rovo-theme.css /build/rovo-theme.css
+RUN cat rovo-theme.css >> src/app/globals.css
+
+# Patch: Rovo pinwheel favicon — replace upstream icon + disable dynamic avatar favicon
+# rovo-icon.svg must be in build context — cp rovo-icon.svg studio-src/
+COPY rovo-icon.svg /build/rovo-icon.svg
+RUN cp rovo-icon.svg src/app/icon.svg && rm -f src/app/favicon.ico
+# Neutralize the useEffect that overwrites our static favicon with agent avatar data URL
+RUN sed -i 's/faviconSeed ? buildAvatarDataUrl(faviconSeed) : null/null/' src/app/HomeClient.tsx
+
+# Patch: Replace "OpenClaw Studio" branding with "RovoClaw"
+RUN sed -i 's/OpenClaw Studio/RovoClaw/g' src/app/layout.tsx && \
+    sed -i 's/OpenClaw Studio/RovoClaw/g' src/features/agents/components/HeaderBar.tsx
+
+# Patch: Default to dark mode (match Rovo dark theme)
+RUN sed -i 's/var d=t?t==='"'"'dark'"'"':m/var d=t?t==='"'"'dark'"'"':true/' src/app/layout.tsx
+
+# Install dependencies and build
+RUN npm install --ignore-scripts=false && npm run build
+
+# --- Runtime stage ---
+FROM node:22-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user
+RUN groupadd -r studio && useradd -r -g studio -d /app studio
+
+WORKDIR /app
+
+# Copy built app
+COPY --from=builder --chown=studio:studio /build/.next ./.next
+COPY --from=builder --chown=studio:studio /build/node_modules ./node_modules
+COPY --from=builder --chown=studio:studio /build/server ./server
+COPY --from=builder --chown=studio:studio /build/public ./public
+COPY --from=builder --chown=studio:studio /build/package.json ./package.json
+COPY --from=builder --chown=studio:studio /build/next.config.ts ./next.config.ts
+COPY --from=builder --chown=studio:studio /build/tsconfig.json ./tsconfig.json
+COPY --from=builder --chown=studio:studio /build/src ./src
+
+# Settings directory (mounted at deploy time)
+RUN mkdir -p /app/.openclaw/openclaw-studio && \
+    chown -R studio:studio /app/.openclaw
+
+ENV NODE_ENV=production
+ENV HOSTNAME=0.0.0.0
+
+USER studio
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=15s --timeout=5s --retries=3 --start-period=30s \
+    CMD wget --spider --quiet http://127.0.0.1:3000/ || exit 1
+
+CMD ["node", "server/index.js"]

@@ -1,0 +1,100 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.2.9",
+    "lastTouchedAt": "2026-02-28T12:00:00.000Z"
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {}
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "anthropic/claude-sonnet-4-5",
+        "fallbacks": [
+          "anthropic/claude-sonnet-4-5"
+        ]
+      },
+      "maxConcurrent": 2,
+      "timeoutSeconds": 300
+    },
+    "list": [
+      {
+        "id": "main"
+      },
+      {
+        "id": "anvil",
+        "name": "anvil",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "harbor",
+        "name": "harbor",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "shield",
+        "name": "shield",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "beacon",
+        "name": "beacon",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "lens",
+        "name": "lens",
+        "model": "anthropic/claude-sonnet-4-5"
+      }
+    ]
+  },
+  "bindings": [
+    { "agentId": "anvil", "match": { "channel": "server-http" } },
+    { "agentId": "harbor", "match": { "channel": "server-http" } },
+    { "agentId": "shield", "match": { "channel": "server-http" } },
+    { "agentId": "beacon", "match": { "channel": "server-http" } },
+    { "agentId": "lens", "match": { "channel": "server-http" } }
+  ],
+  "channels": {},
+  "gateway": {
+    "port": 18790,
+    "mode": "local",
+    "http": {
+      "endpoints": {
+        "chatCompletions": { "enabled": true }
+      }
+    },
+    "controlUi": {
+      "enabled": true,
+      "allowInsecureAuth": true,
+      "dangerouslyDisableDeviceAuth": true,
+      "allowedOrigins": ["http://localhost:18789", "http://127.0.0.1:18789"]
+    },
+    "auth": {
+      "mode": "password",
+      "password": "REPLACE_WITH_STRONG_PASSWORD"
+    },
+    "trustedProxies": [
+      "127.0.0.0/8"
+    ]
+  },
+  "skills": {
+    "install": {
+      "nodeManager": "npm"
+    },
+    "entries": {
+      "weather": { "enabled": true },
+      "healthcheck": { "enabled": true },
+      "skill-creator": { "enabled": true },
+      "clawhub": { "enabled": true },
+      "brainstorm": { "enabled": true },
+      "summarize": { "enabled": true },
+      "coding-agent": { "enabled": true },
+      "session-logs": { "enabled": true }
+    }
+  },
+  "plugins": {
+    "entries": {}
+  }
+}

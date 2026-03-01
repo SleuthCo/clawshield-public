@@ -1,0 +1,374 @@
+# ClawShield + OpenClaw + Studio — 4-container hardened deployment
+# All containers: read_only, no-new-privileges, cap_drop ALL, resource limits
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: clawshield-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - /opt/clawshield/certs:/etc/nginx/certs:ro
+      - /var/lib/letsencrypt:/var/lib/letsencrypt:ro
+      - nginx-logs:/var/log/nginx
+      # tmpfs for nginx runtime (pid, client_body_temp, etc.)
+    tmpfs:
+      - /var/cache/nginx:size=32m
+      - /var/run:size=1m
+      - /tmp:size=16m
+    networks:
+      - frontend
+      - proxy_net
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  clawshield:
+    build:
+      context: ${CLAWSHIELD_SRC_DIR:-..}
+      dockerfile: ${CLAWSHIELD_DOCKERFILE:-deploy/Dockerfile.clawshield}
+    container_name: clawshield-proxy
+    restart: unless-stopped
+    # No host port bindings — only reachable via nginx on proxy_net
+    volumes:
+      - ./config/policy.yaml:/etc/clawshield/policy.yaml:ro
+      - clawshield-audit:/var/lib/clawshield
+    tmpfs:
+      - /tmp:size=16m
+    networks:
+      - proxy_net
+      - backend_net
+    environment:
+      - CLAWSHIELD_POLICY=/etc/clawshield/policy.yaml
+      - CLAWSHIELD_GATEWAY_URL=http://openclaw:18790
+      - CLAWSHIELD_GATEWAY_TOKEN=${GATEWAY_AUTH_TOKEN}
+      - CLAWSHIELD_STUDIO_TOKEN=${STUDIO_ACCESS_TOKEN}
+      - CLAWSHIELD_LISTEN=:18789
+      - CLAWSHIELD_AUDIT_DB=/var/lib/clawshield/audit.db
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:18789/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      openclaw:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  studio:
+    build:
+      context: ./studio-src
+      dockerfile: ../Dockerfile.studio
+    container_name: clawshield-studio
+    restart: unless-stopped
+    # No host port bindings — only reachable via nginx on proxy_net
+    volumes:
+      - ./config/studio-settings.json:/app/.openclaw/openclaw-studio/settings.json:ro
+    tmpfs:
+      - /tmp:size=32m
+      - /app/.next/cache:size=128m
+    networks:
+      - proxy_net
+      - backend_net
+    environment:
+      - PORT=3000
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+      - STUDIO_ACCESS_TOKEN=${STUDIO_ACCESS_TOKEN}
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      openclaw:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  openclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile.openclaw
+    container_name: clawshield-openclaw
+    restart: unless-stopped
+    # No host port bindings — only reachable by clawshield on backend_net
+    volumes:
+      - ./config/openclaw.json:/home/openclaw/.openclaw/openclaw.json:ro
+      - openclaw-agents:/home/openclaw/.openclaw/agents
+      - openclaw-devices:/home/openclaw/.openclaw/devices
+      - openclaw-workspace:/home/openclaw/.openclaw/workspace
+      - openclaw-ws-friday:/home/openclaw/.openclaw/workspace-friday
+      - openclaw-ws-pepper:/home/openclaw/.openclaw/workspace-pepper
+      - openclaw-ws-nimbus:/home/openclaw/.openclaw/workspace-nimbus
+      - openclaw-ws-sentinel:/home/openclaw/.openclaw/workspace-sentinel
+      - openclaw-ws-coda:/home/openclaw/.openclaw/workspace-coda
+      - openclaw-ws-main:/home/openclaw/.openclaw/workspace-main
+    tmpfs:
+      - /tmp:size=64m
+      - /home/openclaw/.npm:size=16m
+    networks:
+      - backend_net
+      - egress
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    security_opt:
+      - no-new-privileges:true
+    # read_only removed — gateway writes runtime state files (exec-approvals.json,
+    # canvas/, cron/, sessions/) that can't all be pre-declared as mounts.
+    # Still hardened: internal-only networks, no ports, cap_drop ALL, no-new-privileges.
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 2G
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:18790/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # =====================================================================
+  # Demo stack — generic agents for executive demos
+  # Completely isolated from private stack above
+  # =====================================================================
+
+  demo-openclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile.openclaw
+    container_name: demo-openclaw
+    restart: unless-stopped
+    volumes:
+      - ./demo/openclaw.json:/home/openclaw/.openclaw/openclaw.json:ro
+      - ./demo/agents:/home/openclaw/.openclaw/agents:ro
+      - demo-workspace:/home/openclaw/.openclaw/workspace
+    tmpfs:
+      - /tmp:size=64m
+      - /home/openclaw/.npm:size=16m
+    networks:
+      - backend_net
+      - egress
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:18792/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  demo-clawshield:
+    build:
+      context: ${CLAWSHIELD_SRC_DIR:-..}
+      dockerfile: ${CLAWSHIELD_DOCKERFILE:-deploy/Dockerfile.clawshield}
+    container_name: demo-clawshield
+    restart: unless-stopped
+    volumes:
+      - ./demo/policy.yaml:/etc/clawshield/policy.yaml:ro
+      - demo-audit:/var/lib/clawshield
+    tmpfs:
+      - /tmp:size=16m
+    networks:
+      - proxy_net
+      - backend_net
+    environment:
+      - CLAWSHIELD_POLICY=/etc/clawshield/policy.yaml
+      - CLAWSHIELD_GATEWAY_URL=http://demo-openclaw:18792
+      - CLAWSHIELD_GATEWAY_TOKEN=${DEMO_GATEWAY_TOKEN}
+      - CLAWSHIELD_LISTEN=:18791
+      - CLAWSHIELD_AUDIT_DB=/var/lib/clawshield/audit.db
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:18791/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      demo-openclaw:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  demo-studio:
+    build:
+      context: ./studio-src
+      dockerfile: ../Dockerfile.studio
+    container_name: demo-studio
+    restart: unless-stopped
+    volumes:
+      - ./demo/studio-settings.json:/app/.openclaw/openclaw-studio/settings.json:ro
+    tmpfs:
+      - /tmp:size=32m
+      - /app/.next/cache:size=128m
+    networks:
+      - proxy_net
+      - backend_net
+    environment:
+      - PORT=3002
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+      - STUDIO_ACCESS_TOKEN=${DEMO_STUDIO_TOKEN}
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:3002/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      demo-openclaw:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  frontend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.19.0.0/24
+  proxy_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+  backend_net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
+  egress:
+    # Outbound-only network for OpenClaw → Anthropic API
+    # No port bindings, no inbound access from host
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/24
+
+volumes:
+  nginx-logs:
+  clawshield-audit:
+  openclaw-agents:
+  openclaw-devices:
+  openclaw-workspace:
+  openclaw-ws-friday:
+  openclaw-ws-pepper:
+  openclaw-ws-nimbus:
+  openclaw-ws-sentinel:
+  openclaw-ws-coda:
+  openclaw-ws-main:
+  # Demo stack volumes
+  demo-workspace:
+  demo-audit:

@@ -1,0 +1,66 @@
+# Security Scanning Policy — all scanners enabled
+# Use this as a starting point for production deployments.
+
+default_action: deny
+
+evaluation_timeout_ms: 200
+
+allowlist:
+  - read
+  - write
+  - web.fetch
+  - db.query
+  - file.read
+  - file.write
+  - search.query
+
+denylist:
+  - shell.exec
+  - system.raw
+
+arg_filters:
+  - tool: "db.query"
+    regex: "(api_key|password|token|secret)[^\\w]*[=:]?['\"]?[a-zA-Z0-9._-]{20,}['\"]?"
+  - tool: "web.fetch"
+    regex: "(api_key|password|token|secret)[^\\w]*[=:]?['\"]?[a-zA-Z0-9._-]{20,}['\"]?"
+
+domain_allowlist:
+  - "example.com"
+  - "*.github.com"
+  - "api.openai.com"
+
+max_message_bytes: 1048576
+
+# --- Security Scanners ---
+
+vuln_scan:
+  enabled: true
+  rules:
+    - sqli
+    - ssrf
+    - path_traversal
+    - command_injection
+    - xss
+  exclude_tools:
+    - "db.raw_query"    # Legitimate SQL tool — skip sqli
+
+prompt_injection:
+  enabled: true
+  scan_requests: true
+  scan_responses: true
+  canary_tokens: false
+  sensitivity: medium
+  trusted_response_tools:
+    - "tools.list"
+    - "resources.list"
+
+malware_scan:
+  enabled: true
+  checks:
+    - magic_bytes
+    - entropy
+    - signatures
+    - archive_safety
+    - script_detection
+  entropy_threshold: 7.0
+  max_decoded_size: 10485760

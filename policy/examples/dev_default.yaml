@@ -1,0 +1,27 @@
+# Dev Default Policy - Permissive for development
+
+default_action: allow
+
+evaluation_timeout_ms: 100 # milliseconds, default 100ms
+
+# Allow all tools by default (no denylist)
+denylist: []
+
+# Optional: restrict to specific tools only
+allowlist: []
+
+# Block any argument containing API keys, passwords, tokens
+arg_filters:
+  - tool: "system.exec"
+    regex: "(api_key|password|token|secret)[^\w]*[=:]?['"]?[a-zA-Z0-9._-]{20,}['"]?"
+  - tool: "web.request"
+    regex: "(api_key|password|token|secret)[^\w]*[=:]?['"]?[a-zA-Z0-9._-]{20,}['"]?"
+
+# Allowlist for web domains (regex-style wildcards supported)
+domain_allowlist:
+  - "example.com"
+  - "*.google.com"
+  - "api.github.com"
+
+# Prevent DoS via oversized JSON-RPC messages
+max_message_bytes: 1048576 # 1MB default

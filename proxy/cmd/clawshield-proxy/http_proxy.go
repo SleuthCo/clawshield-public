@@ -1,0 +1,945 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"net/http/httputil"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"nhooyr.io/websocket"
+
+	"github.com/SleuthCo/clawshield/proxy/internal/audit/hashlined"
+	"github.com/SleuthCo/clawshield/proxy/internal/audit/sqlite"
+	"github.com/SleuthCo/clawshield/proxy/internal/engine"
+	"github.com/SleuthCo/clawshield/shared/types"
+)
+
+// httpProxy runs ClawShield as an HTTP/WebSocket reverse proxy in front of
+// an OpenClaw gateway (or any HTTP-based tool server).
+type httpProxy struct {
+	gatewayURL     *url.URL
+	authToken      string
+	studioToken    string // HMAC signing key for Studio tickets (same as STUDIO_ACCESS_TOKEN)
+	evaluator      *engine.Evaluator
+	auditWriter    *sqlite.Writer
+	auditDB        *sql.DB
+	sessionID      string
+	timeoutMs      int
+	maxBytes       int64
+	standaloneMode bool
+	startTime      time.Time
+	controlUIDir   string
+}
+
+// runHTTPProxy starts the HTTP reverse proxy mode.
+func runHTTPProxy(cfg *engine.Policy, evaluator *engine.Evaluator, auditWriter *sqlite.Writer, auditDB *sql.DB,
+	gatewayURL, authToken, studioToken, listenAddr string, sessionID string, standalone bool, controlUIDir string) error {
+
+	gw, err := url.Parse(gatewayURL)
+	if err != nil {
+		return fmt.Errorf("invalid --gateway-url: %w", err)
+	}
+
+	timeoutMs := 100
+	if cfg.EvaluationTimeoutMs > 0 {
+		timeoutMs = cfg.EvaluationTimeoutMs
+	}
+	maxBytes := cfg.MaxMessageBytes
+	if maxBytes <= 0 {
+		maxBytes = 1048576
+	}
+
+	p := &httpProxy{
+		gatewayURL:     gw,
+		authToken:      authToken,
+		studioToken:    studioToken,
+		evaluator:      evaluator,
+		auditWriter:    auditWriter,
+		auditDB:        auditDB,
+		sessionID:      sessionID,
+		timeoutMs:      timeoutMs,
+		maxBytes:       maxBytes,
+		standaloneMode: standalone,
+		startTime:      time.Now(),
+		controlUIDir:   controlUIDir,
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/audit", p.handleAuditAPI)          // M3: Audit query API
+	mux.HandleFunc("/api/v1/status", p.handleStatusAPI)        // Status API (dashboard)
+	mux.HandleFunc("/v1/studio/ticket", p.handleStudioTicket) // Studio deep-link ticket generation
+
+	if standalone {
+		// Standalone mode: serve dashboard at root, branded Control UI skin
+		mux.HandleFunc("/static/", p.serveStaticAsset) // Embedded static assets (logo, etc.)
+		mux.HandleFunc("/favicon.svg", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+		mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+		mux.HandleFunc("/favicon-32.png", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+		mux.HandleFunc("/control-ui/index.html", p.serveControlUISkin)
+		if controlUIDir != "" {
+			// Serve Control UI assets directly from local directory
+			mux.HandleFunc("/control-ui/", p.serveControlUIAsset)
+			log.Printf("Serving Control UI assets from %s", controlUIDir)
+		} else {
+			// Proxy Control UI assets to gateway, but intercept root to serve our skin
+			mux.HandleFunc("/control-ui/", func(w http.ResponseWriter, r *http.Request) {
+				// Bare /control-ui/ or /control-ui → serve our branded skin
+				path := strings.TrimPrefix(r.URL.Path, "/control-ui")
+				if path == "" || path == "/" {
+					p.serveControlUISkin(w, r)
+					return
+				}
+				// Serve favicons from embedded static assets (gateway SPA catch-all returns HTML for these)
+				if strings.HasSuffix(path, "favicon.svg") || strings.HasSuffix(path, "favicon-32.png") || strings.HasSuffix(path, "favicon.ico") {
+					// Rewrite to /static/ path and serve from embedded FS
+					idx := strings.LastIndex(path, "favicon")
+					r.URL.Path = "/static/" + path[idx:]
+					p.serveStaticAsset(w, r)
+					return
+				}
+				// Everything else (JS, CSS, assets) → proxy to OpenClaw
+				p.handler(w, r)
+			})
+		}
+		mux.HandleFunc("/", p.standaloneRootHandler)
+		log.Println("Standalone mode enabled — dashboard at /")
+	} else {
+		mux.HandleFunc("/", p.handler)
+	}
+
+	server := &http.Server{
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	log.Printf("ClawShield HTTP proxy listening on %s → %s", listenAddr, gatewayURL)
+	return server.ListenAndServe()
+}
+
+// standaloneRootHandler serves the dashboard at "/" and proxies everything else.
+func (p *httpProxy) standaloneRootHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" && !isWebSocketUpgrade(r) {
+		p.serveDashboard(w, r)
+		return
+	}
+	p.handler(w, r)
+}
+
+// handler dispatches to WebSocket or HTTP reverse proxy based on upgrade headers.
+func (p *httpProxy) handler(w http.ResponseWriter, r *http.Request) {
+	if isWebSocketUpgrade(r) {
+		p.handleWebSocket(w, r)
+		return
+	}
+	p.handleHTTP(w, r)
+}
+
+// handleHTTP forwards non-WebSocket requests via a standard reverse proxy.
+// Applies response scanning (M4), session isolation (M2), and audit correlation (M3).
+func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	// M3: Extract bridge headers for audit correlation
+	correlationID := r.Header.Get("X-Correlation-ID")
+	classification := r.Header.Get("X-Data-Classification")
+	sessionMode := r.Header.Get("X-Session-Mode")
+
+	// Layer 3: Extract agent identity + scope headers
+	agentName := r.Header.Get("X-Agent-Name")
+	agentScopeRaw := r.Header.Get("X-Agent-Scope")
+	var agentScopes []string
+	if agentScopeRaw != "" {
+		var scopes []struct {
+			Platform string `json:"platform"`
+		}
+		if json.Unmarshal([]byte(agentScopeRaw), &scopes) == nil {
+			for _, s := range scopes {
+				agentScopes = append(agentScopes, s.Platform)
+			}
+		}
+	}
+
+	// Determine source for audit
+	source := "direct"
+	if correlationID != "" {
+		source = "forge-bridge"
+	}
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = p.gatewayURL.Scheme
+			req.URL.Host = p.gatewayURL.Host
+			req.URL.Path = singleJoiningSlash(p.gatewayURL.Path, req.URL.Path)
+			req.Host = p.gatewayURL.Host
+			// Inject auth token for upstream gateway
+			if p.authToken != "" {
+				req.Header.Set("Authorization", "Bearer "+p.authToken)
+			}
+			// Remove bridge headers — don't leak to upstream
+			req.Header.Del("X-Correlation-ID")
+			req.Header.Del("X-Data-Classification")
+			req.Header.Del("X-Session-Mode")
+			req.Header.Del("X-Agent-Name")
+			req.Header.Del("X-Agent-Scope")
+
+			// M2: Rewrite user field for ephemeral sessions (defense-in-depth)
+			if sessionMode == "ephemeral" && req.Body != nil {
+				bodyBytes, err := io.ReadAll(req.Body)
+				if err == nil {
+					var bodyMap map[string]interface{}
+					if json.Unmarshal(bodyBytes, &bodyMap) == nil {
+						// Replace user with random UUID
+						bodyMap["user"] = generateAuthToken()[:32]
+						bodyMap["store"] = false
+						rewritten, err := json.Marshal(bodyMap)
+						if err == nil {
+							req.Body = io.NopCloser(bytes.NewReader(rewritten))
+							req.ContentLength = int64(len(rewritten))
+						}
+					}
+				}
+			}
+		},
+		// M4: Scan HTTP responses before returning to client
+		ModifyResponse: func(resp *http.Response) error {
+			// Only scan JSON responses from chat completions
+			ct := resp.Header.Get("Content-Type")
+			if !strings.Contains(ct, "application/json") || resp.StatusCode != 200 {
+				return nil
+			}
+
+			bodyBytes, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				return nil
+			}
+
+			// Extract response content for scanning
+			var chatResp struct {
+				Choices []struct {
+					Message struct {
+						Content string `json:"content"`
+					} `json:"message"`
+				} `json:"choices"`
+			}
+			if json.Unmarshal(bodyBytes, &chatResp) == nil && len(chatResp.Choices) > 0 {
+				content := chatResp.Choices[0].Message.Content
+
+				// Run injection + malware scanning on response
+				respBlocked := false
+				respReason := "response clean"
+				scannerType := ""
+
+				evalCtx, evalCancel := context.WithTimeout(r.Context(), time.Duration(p.timeoutMs)*time.Millisecond)
+				d, reason := p.evaluator.EvaluateResponse(evalCtx, "chat/completions", content)
+				evalCancel()
+
+				if d == engine.Deny {
+					respBlocked = true
+					respReason = reason
+					if strings.HasPrefix(reason, "prompt_injection") {
+						scannerType = "injection"
+					} else if strings.HasPrefix(reason, "malware") {
+						scannerType = "malware"
+					}
+				}
+
+				// Layer 3: Agent scope validation
+				if !respBlocked && len(agentScopes) > 0 {
+					scopeD, scopeR := p.evaluator.EvaluateAgentScope(content, agentScopes)
+					if scopeD == engine.Deny {
+						respBlocked = true
+						respReason = scopeR
+						scannerType = "scope"
+					}
+				}
+
+				// Audit log the response scan (enriched with agent name)
+				if p.auditWriter != nil {
+					dec := types.Decision{
+						Timestamp:       time.Now(),
+						SessionID:       p.sessionID,
+						Tool:            "chat/completions_response",
+						ArgumentsHash:   fmt.Sprintf("http_response_size=%d", len(bodyBytes)),
+						Decision:        d,
+						Reason:          respReason,
+						PolicyVersion:   "1.0",
+						ScannerType:     scannerType,
+						CorrelationID:   correlationID,
+						Classification:  classification,
+						Source:          source,
+						ResponseBlocked: respBlocked,
+						AgentName:       agentName,
+					}
+					_ = p.auditWriter.Write(&dec)
+				}
+
+				if respBlocked {
+					log.Printf("BLOCKED HTTP RESPONSE: reason=%s correlationId=%s agent=%s", respReason, correlationID, agentName)
+					blockedResp := map[string]interface{}{
+						"error": map[string]interface{}{
+							"message": "blocked by security policy",
+							"code":    -32600,
+						},
+					}
+					blocked, _ := json.Marshal(blockedResp)
+					resp.Body = io.NopCloser(bytes.NewReader(blocked))
+					resp.ContentLength = int64(len(blocked))
+					resp.Header.Set("Content-Length", strconv.Itoa(len(blocked)))
+					return nil
+				}
+			}
+
+			// Response clean — restore body
+			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("HTTP proxy error: %v", err)
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		},
+	}
+
+	// Audit log the HTTP request with bridge metadata
+	p.logBridgeDecision(r.Method+" "+r.URL.Path, "http_request", "allow", "http pass-through",
+		correlationID, classification, source, agentName)
+
+	proxy.ServeHTTP(w, r)
+}
+
+// handleWebSocket upgrades the client connection and the upstream connection,
+// then bidirectionally proxies messages with policy evaluation on each frame.
+func (p *httpProxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Build upstream URL
+	upstreamURL := *p.gatewayURL
+	if upstreamURL.Scheme == "https" {
+		upstreamURL.Scheme = "wss"
+	} else {
+		upstreamURL.Scheme = "ws"
+	}
+	upstreamURL.Path = singleJoiningSlash(upstreamURL.Path, r.URL.Path)
+	upstreamURL.RawQuery = r.URL.RawQuery
+
+	// Build upstream headers
+	upstreamHeaders := http.Header{}
+	if p.authToken != "" {
+		upstreamHeaders.Set("Authorization", "Bearer "+p.authToken)
+	}
+	// Forward relevant headers, rewriting Origin to match the gateway
+	for _, h := range []string{"Cookie", "User-Agent"} {
+		if v := r.Header.Get(h); v != "" {
+			upstreamHeaders.Set(h, v)
+		}
+	}
+	// Rewrite Origin to match gateway URL so the gateway doesn't reject it
+	upstreamHeaders.Set("Origin", p.gatewayURL.Scheme+"://"+p.gatewayURL.Host)
+
+	// Connect to upstream gateway
+	ctx := r.Context()
+	upstreamConn, _, err := websocket.Dial(ctx, upstreamURL.String(), &websocket.DialOptions{
+		HTTPHeader: upstreamHeaders,
+	})
+	if err != nil {
+		log.Printf("Failed to connect to upstream WebSocket: %v", err)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+	defer upstreamConn.Close(websocket.StatusNormalClosure, "proxy shutdown")
+	upstreamConn.SetReadLimit(p.maxBytes)
+
+	// Accept client WebSocket upgrade
+	clientConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		InsecureSkipVerify: true, // Allow any origin (policy handles security)
+	})
+	if err != nil {
+		log.Printf("Failed to accept WebSocket upgrade: %v", err)
+		return
+	}
+	defer clientConn.Close(websocket.StatusNormalClosure, "proxy shutdown")
+	clientConn.SetReadLimit(p.maxBytes)
+
+	// Bidirectional proxy with policy evaluation
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Client → Upstream (request path)
+	go func() {
+		defer wg.Done()
+		p.proxyClientToUpstream(ctx, clientConn, upstreamConn)
+	}()
+
+	// Upstream → Client (response path)
+	go func() {
+		defer wg.Done()
+		p.proxyUpstreamToClient(ctx, upstreamConn, clientConn)
+	}()
+
+	wg.Wait()
+}
+
+// proxyClientToUpstream reads from the client, evaluates each message, and forwards allowed ones.
+func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream *websocket.Conn) {
+	for {
+		msgType, data, err := client.Read(ctx)
+		if err != nil {
+			if websocket.CloseStatus(err) != -1 || ctx.Err() != nil {
+				return // Normal close or context cancelled
+			}
+			log.Printf("Client WS read error: %v", err)
+			return
+		}
+
+		if msgType == websocket.MessageBinary {
+			// Forward binary frames without evaluation
+			if err := upstream.Write(ctx, msgType, data); err != nil {
+				log.Printf("Upstream WS write error: %v", err)
+				return
+			}
+			continue
+		}
+
+		// Text frame: evaluate as JSON
+		message := string(data)
+
+		// Size check
+		if int64(len(data)) > p.maxBytes {
+			log.Printf("BLOCKED: WebSocket message exceeds max size (%d > %d)", len(data), p.maxBytes)
+			p.sendErrorFrame(ctx, client, "", "message too large")
+			continue
+		}
+
+		// Extract method and agent info for OpenClaw-specific checks
+		var rpc struct {
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+			Type   string          `json:"type"`
+			Event  string          `json:"event"`
+		}
+		_ = json.Unmarshal(data, &rpc)
+
+		// Pass through OpenClaw protocol messages (connection handshake)
+		// Events use {type:"event", event:"connect.*"} format
+		// Connect request uses {type:"req", method:"connect"} format
+		isProtocol := (rpc.Type == "event" && strings.HasPrefix(rpc.Event, "connect.")) ||
+			(rpc.Type == "req" && rpc.Method == "connect") ||
+			(rpc.Type == "res")
+		if isProtocol {
+			label := rpc.Event
+			if label == "" {
+				label = rpc.Method
+			}
+			if label == "" {
+				label = "response"
+			}
+			p.logDecision("protocol:"+label, "", "allow", "protocol handshake")
+			log.Printf("ALLOWED: protocol %s=%s", rpc.Type, label)
+
+			// In standalone mode, inject auth token into connect request
+			// so the Control UI doesn't need to know the gateway credentials
+			outData := data
+			if p.standaloneMode && p.authToken != "" && rpc.Type == "req" && rpc.Method == "connect" {
+				outData = p.injectConnectAuth(data)
+			}
+
+			if err := upstream.Write(ctx, msgType, outData); err != nil {
+				log.Printf("Upstream WS write error: %v", err)
+				return
+			}
+			continue
+		}
+
+		// OpenClaw agent allowlist check
+		if rpc.Method != "" {
+			var params struct {
+				AgentID string `json:"agentId"`
+				Channel string `json:"channel"`
+				Tool    string `json:"tool"`
+			}
+			_ = json.Unmarshal(rpc.Params, &params)
+
+			if params.AgentID != "" {
+				decision, reason := p.evaluator.EvaluateOpenClawAgent(params.AgentID)
+				if decision == engine.Deny {
+					log.Printf("BLOCKED: agent=%s reason=%s", params.AgentID, reason)
+					p.logDecision(rpc.Method, "agent:"+params.AgentID, "deny", reason)
+					p.sendErrorFrame(ctx, client, rpc.Method, reason)
+					continue
+				}
+			}
+
+			// Channel-specific tool check
+			if params.Channel != "" && params.Tool != "" {
+				decision, reason := p.evaluator.EvaluateOpenClawChannel(params.Channel, params.Tool)
+				if decision == engine.Deny {
+					log.Printf("BLOCKED: channel=%s tool=%s reason=%s", params.Channel, params.Tool, reason)
+					p.logDecision(rpc.Method, "channel:"+params.Channel+"/"+params.Tool, "deny", reason)
+					p.sendErrorFrame(ctx, client, rpc.Method, reason)
+					continue
+				}
+			}
+		}
+
+		// Full evaluator pipeline (denylist, allowlist, arg filters, vuln scan, injection scan)
+		evalCtx, evalCancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
+		decision, reason := p.evaluator.EvaluateWithContext(evalCtx, message)
+		evalCancel()
+
+		method := rpc.Method
+		if method == "" {
+			method = "<unknown>"
+		}
+
+		// Audit log
+		p.logDecision(method, string(rpc.Params), decision, reason)
+
+		if decision == engine.Deny {
+			log.Printf("BLOCKED: method=%s reason=%s", method, reason)
+			p.sendErrorFrame(ctx, client, method, reason)
+			continue
+		}
+
+		log.Printf("ALLOWED: method=%s", method)
+		if err := upstream.Write(ctx, msgType, data); err != nil {
+			log.Printf("Upstream WS write error: %v", err)
+			return
+		}
+	}
+}
+
+// proxyUpstreamToClient reads from upstream, scans responses, and forwards clean ones.
+func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client *websocket.Conn) {
+	for {
+		msgType, data, err := upstream.Read(ctx)
+		if err != nil {
+			if websocket.CloseStatus(err) != -1 || ctx.Err() != nil {
+				return
+			}
+			log.Printf("Upstream WS read error: %v", err)
+			return
+		}
+
+		if msgType == websocket.MessageBinary {
+			if err := client.Write(ctx, msgType, data); err != nil {
+				log.Printf("Client WS write error: %v", err)
+				return
+			}
+			continue
+		}
+
+		// Response scanning
+		message := string(data)
+		var rpc struct {
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(data, &rpc)
+		respMethod := rpc.Method
+		if respMethod == "" {
+			respMethod = "<response>"
+		}
+
+		respDecision := "allow"
+		respReason := "response clean"
+		scannerType := ""
+
+		if p.evaluator.InjectionDetector() != nil || p.evaluator.MalwareScanner() != nil {
+			evalCtx, evalCancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
+			d, r := p.evaluator.EvaluateResponse(evalCtx, respMethod, message)
+			evalCancel()
+			respDecision = d
+			respReason = r
+			if d == engine.Deny {
+				if len(r) > 0 {
+					if r[0] == 'p' {
+						scannerType = "injection"
+					} else if r[0] == 'm' {
+						scannerType = "malware"
+					}
+				}
+			}
+		}
+
+		// Audit log response
+		if p.auditWriter != nil {
+			auditDec := types.Decision{
+				Timestamp:     time.Now(),
+				SessionID:     p.sessionID,
+				Tool:          respMethod,
+				ArgumentsHash: fmt.Sprintf("ws_response_size=%d", len(data)),
+				Decision:      respDecision,
+				Reason:        respReason,
+				PolicyVersion: "1.0",
+				ScannerType:   scannerType,
+			}
+			_ = p.auditWriter.Write(&auditDec)
+		}
+
+		if respDecision == engine.Deny {
+			log.Printf("BLOCKED RESPONSE: method=%s reason=%s", respMethod, respReason)
+			p.sendErrorFrame(ctx, client, respMethod, "response blocked by security policy")
+			continue
+		}
+
+		if err := client.Write(ctx, msgType, data); err != nil {
+			log.Printf("Client WS write error: %v", err)
+			return
+		}
+	}
+}
+
+// injectConnectAuth modifies a WebSocket connect message to include the gateway auth token.
+// This allows standalone mode to transparently authenticate the Control UI without
+// the user needing to know or enter the gateway token.
+func (p *httpProxy) injectConnectAuth(data []byte) []byte {
+	var msg map[string]interface{}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return data
+	}
+
+	params, _ := msg["params"].(map[string]interface{})
+	if params == nil {
+		params = map[string]interface{}{}
+		msg["params"] = params
+	}
+
+	auth, _ := params["auth"].(map[string]interface{})
+	if auth == nil {
+		auth = map[string]interface{}{}
+		params["auth"] = auth
+	}
+
+	// Inject the gateway token
+	auth["token"] = p.authToken
+
+	modified, err := json.Marshal(msg)
+	if err != nil {
+		return data
+	}
+	log.Printf("Injected auth token into WS connect message")
+	return modified
+}
+
+// logDecision writes an audit entry for a request evaluation.
+func (p *httpProxy) logDecision(method, params, decision, reason string) {
+	if p.auditWriter == nil {
+		return
+	}
+	argsHash := params
+	if h, err := hashlined.HashArguments(params); err == nil {
+		argsHash = h
+	}
+	scanType := ""
+	if decision == engine.Deny && len(reason) > 0 {
+		if strings.HasPrefix(reason, "vuln_scan:") {
+			scanType = "vuln"
+		} else if strings.HasPrefix(reason, "prompt_injection:") {
+			scanType = "injection"
+		}
+	}
+	auditDec := types.Decision{
+		Timestamp:     time.Now(),
+		SessionID:     p.sessionID,
+		Tool:          method,
+		ArgumentsHash: argsHash,
+		Decision:      decision,
+		Reason:        reason,
+		PolicyVersion: "1.0",
+		ScannerType:   scanType,
+	}
+	if err := p.auditWriter.Write(&auditDec); err != nil {
+		log.Printf("Audit write error: %v", err)
+	}
+}
+
+// sendErrorFrame sends a JSON-RPC error frame back to the client.
+func (p *httpProxy) sendErrorFrame(ctx context.Context, conn *websocket.Conn, method, reason string) {
+	errResp := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"error": map[string]interface{}{
+			"code":    -32600,
+			"message": "blocked by ClawShield security policy",
+			"data":    reason,
+		},
+	}
+	if method != "" {
+		errResp["method"] = method
+	}
+	data, err := json.Marshal(errResp)
+	if err != nil {
+		return
+	}
+	_ = conn.Write(ctx, websocket.MessageText, data)
+}
+
+// logBridgeDecision writes an audit entry with bridge-specific metadata (M3).
+func (p *httpProxy) logBridgeDecision(method, params, decision, reason, correlationID, classification, source, agentName string) {
+	if p.auditWriter == nil {
+		return
+	}
+	argsHash := params
+	if h, err := hashlined.HashArguments(params); err == nil {
+		argsHash = h
+	}
+	scanType := ""
+	if decision == engine.Deny && len(reason) > 0 {
+		if strings.HasPrefix(reason, "vuln_scan:") {
+			scanType = "vuln"
+		} else if strings.HasPrefix(reason, "prompt_injection:") {
+			scanType = "injection"
+		}
+	}
+	dec := types.Decision{
+		Timestamp:      time.Now(),
+		SessionID:      p.sessionID,
+		Tool:           method,
+		ArgumentsHash:  argsHash,
+		Decision:       decision,
+		Reason:         reason,
+		PolicyVersion:  "1.0",
+		ScannerType:    scanType,
+		CorrelationID:  correlationID,
+		Classification: classification,
+		Source:         source,
+		AgentName:      agentName,
+	}
+	if err := p.auditWriter.Write(&dec); err != nil {
+		log.Printf("Audit write error: %v", err)
+	}
+}
+
+// handleStudioTicket generates an HMAC-signed, time-limited ticket for Studio deep-link access.
+// POST /v1/studio/ticket {"agent": "friday", "context": "optional message", "correlationId": "uuid"}
+func (p *httpProxy) handleStudioTicket(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Authenticate with same Bearer token as gateway
+	authHeader := r.Header.Get("Authorization")
+	if p.authToken != "" {
+		expected := "Bearer " + p.authToken
+		if authHeader != expected {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	if p.studioToken == "" {
+		http.Error(w, `{"error":"Studio token not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	// Parse request body
+	var req struct {
+		Agent         string `json:"agent"`
+		Context       string `json:"context"`
+		CorrelationID string `json:"correlationId"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+
+	allowedAgents := map[string]bool{
+		"friday": true, "nimbus": true, "sentinel": true, "pepper": true, "coda": true,
+	}
+	agent := strings.ToLower(strings.TrimSpace(req.Agent))
+	if agent == "" || !allowedAgents[agent] {
+		http.Error(w, `{"error":"invalid agent name"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Generate ticket: agent|timestamp|nonce
+	now := time.Now().Unix()
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		return
+	}
+	nonceHex := hex.EncodeToString(nonce)
+	payload := fmt.Sprintf("%s|%d|%s", agent, now, nonceHex)
+
+	// HMAC-SHA256 sign
+	mac := hmac.New(sha256.New, []byte(p.studioToken))
+	mac.Write([]byte(payload))
+	sig := hex.EncodeToString(mac.Sum(nil))
+
+	// Encode ticket as base64url(payload|signature)
+	ticketRaw := payload + "|" + sig
+	ticket := base64.RawURLEncoding.EncodeToString([]byte(ticketRaw))
+
+	studioBase := os.Getenv("CLAWSHIELD_STUDIO_URL")
+	if studioBase == "" {
+		studioBase = "https://studio.example.com"
+	}
+	studioURL := fmt.Sprintf("%s/?ticket=%s&agent=%s", studioBase, ticket, agent)
+
+	// Audit log
+	p.logBridgeDecision("studio/ticket", fmt.Sprintf("agent=%s", agent), "allow", "studio ticket generated",
+		req.CorrelationID, "", "forge-bridge", agent)
+
+	log.Printf("STUDIO TICKET: agent=%s correlationId=%s expiresIn=300s", agent, req.CorrelationID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"url":       studioURL,
+		"agent":     agent,
+		"expiresIn": 300,
+	})
+}
+
+// handleAuditAPI serves the audit query endpoint (M3).
+// GET /api/v1/audit?since=<ISO>&limit=<int>&source=forge-bridge
+func (p *httpProxy) handleAuditAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Skip auth in standalone mode (dashboard polls this directly)
+	if !p.standaloneMode {
+		authHeader := r.Header.Get("Authorization")
+		if p.authToken != "" {
+			expected := "Bearer " + p.authToken
+			if authHeader != expected {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+	}
+
+	if p.auditDB == nil {
+		http.Error(w, "Audit database not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Parse query params
+	since := r.URL.Query().Get("since")
+	limitStr := r.URL.Query().Get("limit")
+	source := r.URL.Query().Get("source")
+
+	limit := 100
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 1000 {
+			limit = l
+		}
+	}
+
+	query := `SELECT decision_id, timestamp, session_id, tool, arguments_hash, decision, reason,
+		COALESCE(policy_version, '') as policy_version, COALESCE(scanner_type, '') as scanner_type,
+		COALESCE(correlation_id, '') as correlation_id, COALESCE(classification, '') as classification,
+		COALESCE(source, '') as source, COALESCE(response_blocked, 0) as response_blocked
+		FROM decisions WHERE 1=1`
+	args := []interface{}{}
+
+	if since != "" {
+		query += " AND timestamp >= ?"
+		args = append(args, since)
+	}
+	if source != "" {
+		query += " AND source = ?"
+		args = append(args, source)
+	}
+
+	query += " ORDER BY timestamp DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := p.auditDB.Query(query, args...)
+	if err != nil {
+		log.Printf("Audit query error: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type auditEntry struct {
+		DecisionID      int64  `json:"decision_id"`
+		Timestamp       string `json:"timestamp"`
+		SessionID       string `json:"session_id"`
+		Tool            string `json:"tool"`
+		ArgumentsHash   string `json:"arguments_hash"`
+		Decision        string `json:"decision"`
+		Reason          string `json:"reason"`
+		PolicyVersion   string `json:"policy_version"`
+		ScannerType     string `json:"scanner_type"`
+		CorrelationID   string `json:"correlation_id"`
+		Classification  string `json:"classification"`
+		Source          string `json:"source"`
+		ResponseBlocked int    `json:"response_blocked"`
+	}
+
+	var entries []auditEntry
+	for rows.Next() {
+		var e auditEntry
+		if err := rows.Scan(&e.DecisionID, &e.Timestamp, &e.SessionID, &e.Tool,
+			&e.ArgumentsHash, &e.Decision, &e.Reason, &e.PolicyVersion, &e.ScannerType,
+			&e.CorrelationID, &e.Classification, &e.Source, &e.ResponseBlocked); err != nil {
+			log.Printf("Audit row scan error: %v", err)
+			continue
+		}
+		entries = append(entries, e)
+	}
+
+	if entries == nil {
+		entries = []auditEntry{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entries)
+}
+
+// isWebSocketUpgrade checks if the request is a WebSocket upgrade.
+func isWebSocketUpgrade(r *http.Request) bool {
+	for _, v := range r.Header.Values("Connection") {
+		for _, part := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), "upgrade") {
+				return strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+			}
+		}
+	}
+	return false
+}
+
+// singleJoiningSlash joins two URL path segments with exactly one slash.
+func singleJoiningSlash(a, b string) string {
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	}
+	return a + b
+}
+
+// generateAuthToken creates a cryptographically random 48-char hex token.
+func generateAuthToken() string {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("tok-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
+
+// listenOnLoopback returns a listener bound to loopback only for the given port.
+func listenOnLoopback(port int) (net.Listener, error) {
+	return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+}

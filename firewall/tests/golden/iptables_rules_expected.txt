@@ -1,0 +1,11 @@
+-F OUTPUT
+-P OUTPUT DROP
+-A OUTPUT -d 127.0.0.1/8 -j ACCEPT
+-A OUTPUT -d 172.16.0.0/12 -j ACCEPT
+-A OUTPUT -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
+-A OUTPUT -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
+-A OUTPUT -d 8.8.4.4 -p udp --dport 53 -j ACCEPT
+-A OUTPUT -d 8.8.4.4 -p tcp --dport 53 -j ACCEPT
+-A OUTPUT -d 104.21.67.129 -j ACCEPT
+-A OUTPUT -d 172.67.164.128 -j ACCEPT
+-A OUTPUT -m limit --limit 5/min -j LOG --log-prefix "[CLAWSHIELD-BLOCKED] " --log-level 4

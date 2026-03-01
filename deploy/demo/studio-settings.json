@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "gateway": {
+    "url": "ws://demo-clawshield:18791",
+    "token": "DEMO_GATEWAY_TOKEN_PLACEHOLDER"
+  }
+}

@@ -1,0 +1,28 @@
+# Strict Default Deny Policy - Zero Trust
+
+default_action: deny
+
+# Explicitly allow only essential tools for security posture
+allowlist:
+  - "system.info"
+  - "system.exec"
+  - "web.fetch"
+  - "file.read"
+  - "file.list"
+
+# Deny all other tools by default
+denylist: []
+
+# Block any sensitive data in arguments
+arg_filters:
+  - tool: "system.exec"
+    regex: "(api_key|password|token|secret)[^\w]*[=:]?['"]?[a-zA-Z0-9._-]{20,}['"]?"
+  - tool: "web.fetch"
+    regex: "(api_key|password|token|secret)[^\w]*[=:]?['"]?[a-zA-Z0-9._-]{20,}['"]?"
+
+# Only allow trusted domains
+domain_allowlist:
+  - "example.com"
+  - "*.google.com"
+  - "api.github.com"
+  - "raw.githubusercontent.com"

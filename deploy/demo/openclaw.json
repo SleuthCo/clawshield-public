@@ -1,0 +1,105 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.2.9",
+    "lastTouchedAt": "2026-02-26T12:00:00.000Z"
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {}
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "anthropic/claude-sonnet-4-5",
+        "fallbacks": [
+          "anthropic/claude-sonnet-4-5"
+        ]
+      },
+      "maxConcurrent": 2,
+      "timeoutSeconds": 300
+    },
+    "list": [
+      {
+        "id": "atlas",
+        "name": "atlas",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "sage",
+        "name": "sage",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "spark",
+        "name": "spark",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "scout",
+        "name": "scout",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "maven",
+        "name": "maven",
+        "model": "anthropic/claude-sonnet-4-5"
+      }
+    ]
+  },
+  "bindings": [
+    {
+      "agentId": "atlas",
+      "match": {
+        "channel": "server-http"
+      }
+    },
+    {
+      "agentId": "sage",
+      "match": {
+        "channel": "server-http"
+      }
+    },
+    {
+      "agentId": "spark",
+      "match": {
+        "channel": "server-http"
+      }
+    },
+    {
+      "agentId": "scout",
+      "match": {
+        "channel": "server-http"
+      }
+    },
+    {
+      "agentId": "maven",
+      "match": {
+        "channel": "server-http"
+      }
+    }
+  ],
+  "channels": {},
+  "gateway": {
+    "port": 18792,
+    "mode": "local",
+    "bind": "lan",
+    "http": {
+      "endpoints": {
+        "chatCompletions": { "enabled": true }
+      }
+    },
+    "auth": {
+      "mode": "token",
+      "token": "DEMO_GATEWAY_TOKEN_PLACEHOLDER"
+    }
+  },
+  "skills": {
+    "install": {
+      "nodeManager": "npm"
+    },
+    "entries": {}
+  },
+  "plugins": {
+    "entries": {}
+  }
+}

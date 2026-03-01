@@ -1,0 +1,23 @@
+# Agent scope configuration for ClawShield defense-in-depth (Layer 3).
+# Maps agent names to allowed platform scopes.
+# Used by Forge bridge via X-Agent-Scope header; this file serves as
+# reference documentation and can be loaded for proxy-side validation.
+
+agents:
+  rc:
+    platforms: [jira, confluence, jsm, slack, github, google, microsoft, gitlab, openclaw]
+  friday:
+    platforms: [jira, confluence, github, gitlab]
+  nimbus:
+    platforms: [jira, confluence, google, microsoft]
+  sentinel:
+    platforms: [jira, github]
+  pepper:
+    platforms: [confluence, slack, google]
+  coda:
+    platforms: [jira, confluence, google]
+
+# Platform action prefixes scanned in EvaluateAgentScope():
+#   slack, github, jira, confluence, google, microsoft, gitlab, jsm
+# Action patterns checked: {prefix}-send, -create, -delete, -update,
+#   -search, -list, -get, and directives like "use {prefix}", "invoke {prefix}"

@@ -1,0 +1,486 @@
+/*
+ * RovoClaw Theme — Bold Rovo/Atlassian skin for OpenClaw Studio
+ *
+ * Injected via Dockerfile.studio at build time (cat >> globals.css).
+ * Rovo brand colors: green #36B37E, yellow #FFAB00, orange #FF5630, purple #6554C0
+ * Atlassian primary: #0052CC / #0065FF / #579DFF
+ */
+
+/* ══════════════════════════════════════════════
+   ROVO PALETTE — CSS custom properties
+   ══════════════════════════════════════════════ */
+
+:root {
+  --rovo-green: #36B37E;
+  --rovo-yellow: #FFAB00;
+  --rovo-orange: #FF5630;
+  --rovo-purple: #6554C0;
+  --rovo-blue: #0065FF;
+  --rovo-teal: #00B8D9;
+  --rovo-gradient: linear-gradient(135deg, #6554C0, #0065FF, #00B8D9, #36B37E);
+  --rovo-gradient-warm: linear-gradient(135deg, #6554C0, #FF5630, #FFAB00, #36B37E);
+  --rovo-gradient-border: conic-gradient(from 0deg, #6554C0, #0065FF, #36B37E, #FFAB00, #FF5630, #6554C0);
+}
+
+/* ──────────────────────────────────────────────
+   Light mode
+   ────────────────────────────────────────────── */
+
+:root {
+  --neutral-tint-rgb: rgb(101 111 134);
+  --neutral-tint: #656f86;
+  --background: #FAFBFC;
+  --foreground: #172B4D;
+  --card: #FFFFFF;
+  --card-foreground: #172B4D;
+  --popover: #FFFFFF;
+  --popover-foreground: #172B4D;
+
+  --primary: #0052CC;
+  --primary-foreground: #FFFFFF;
+  --ring: #0052CC;
+
+  --secondary: #F4F5F7;
+  --secondary-foreground: #253858;
+  --muted: #F4F5F7;
+  --muted-foreground: rgba(107, 119, 140, 0.9);
+  --accent: #F4F5F7;
+  --accent-foreground: #253858;
+
+  --destructive: #DE350B;
+  --destructive-foreground: #FFFFFF;
+
+  --border: rgba(9, 30, 66, 0.13);
+  --input: rgba(9, 30, 66, 0.08);
+
+  --sidebar: rgba(244, 245, 247, 0.95);
+  --sidebar-foreground: #172B4D;
+  --sidebar-primary: #0052CC;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #EBECF0;
+  --sidebar-accent-foreground: #253858;
+  --sidebar-border: rgba(9, 30, 66, 0.1);
+  --sidebar-ring: #0052CC;
+  --sidebar-card-bg: rgba(9, 30, 66, 0.04);
+  --sidebar-card-border: rgba(9, 30, 66, 0.13);
+  --sidebar-input-bg: rgba(9, 30, 66, 0.06);
+  --sidebar-input-border: rgba(9, 30, 66, 0.14);
+  --sidebar-control-off: rgba(9, 30, 66, 0.08);
+
+  --surface-0: #FAFBFC;
+  --surface-1: #FFFFFF;
+  --surface-2: #F4F5F7;
+  --surface-3: #EBECF0;
+  --surface-selected: #DEEBFF;
+  --surface-selected-border: #4C9AFF;
+
+  --panel: #FFFFFF;
+  --panel-border: rgba(9, 30, 66, 0.13);
+
+  --status-running-bg: #E3FCEF;
+  --status-running-border: #ABF5D1;
+  --status-running-fg: #006644;
+  --status-error-bg: #FFEBE6;
+  --status-error-border: #FFBDAD;
+  --status-error-fg: #BF2600;
+  --status-idle-bg: #EAE6FF;
+  --status-idle-border: #C0B6F2;
+  --status-idle-fg: #403294;
+  --status-connecting-bg: #FFFAE6;
+  --status-connecting-border: #FFC400;
+  --status-connecting-fg: #FF8B00;
+  --status-connected-bg: #E6FCFF;
+  --status-connected-border: #79E2F2;
+  --status-connected-fg: #008DA6;
+  --status-approval-bg: #FFF0E6;
+  --status-approval-border: #FFAB00;
+  --status-approval-fg: #FF5630;
+
+  --chat-surface-bg: #FFFFFF;
+  --chat-assistant-bg: #F4F5F7;
+  --chat-assistant-border: rgba(9, 30, 66, 0.08);
+  --chat-user-bg: #DEEBFF;
+  --chat-user-border: rgba(0, 82, 204, 0.18);
+  --chat-user-header-bg: rgba(0, 82, 204, 0.06);
+
+  --command-bg: #1B2638;
+  --command-border: rgba(9, 30, 66, 0.36);
+  --command-fg: #F4F5F7;
+
+  --font-display: var(--font-sans);
+  --radius-card: 8px;
+  --radius-container: 12px;
+}
+
+/* ──────────────────────────────────────────────
+   Dark mode — Rovo dark palette
+   ────────────────────────────────────────────── */
+
+.dark {
+  --neutral-tint-rgb: rgb(141 164 186);
+  --neutral-tint: #8da4ba;
+  --background: #1D2125;
+  --foreground: #DEE4EA;
+  --card: #22272B;
+  --card-foreground: #DEE4EA;
+  --popover: #22272B;
+  --popover-foreground: #DEE4EA;
+
+  --primary: #579DFF;
+  --primary-foreground: #1D2125;
+  --ring: #579DFF;
+
+  --secondary: #2C333A;
+  --secondary-foreground: #B6C2CF;
+  --muted: #2C333A;
+  --muted-foreground: rgba(166, 197, 226, 0.72);
+  --accent: #2C333A;
+  --accent-foreground: #B6C2CF;
+
+  --destructive: #F87168;
+  --destructive-foreground: #1D2125;
+
+  --border: rgba(166, 197, 226, 0.16);
+  --input: rgba(166, 197, 226, 0.1);
+
+  --sidebar: #161A1D;
+  --sidebar-foreground: rgba(222, 228, 234, 0.94);
+  --sidebar-primary: #579DFF;
+  --sidebar-primary-foreground: #1D2125;
+  --sidebar-accent: #38414A;
+  --sidebar-accent-foreground: #B6C2CF;
+  --sidebar-border: rgba(166, 197, 226, 0.08);
+  --sidebar-ring: #579DFF;
+  --sidebar-card-bg: rgba(166, 197, 226, 0.05);
+  --sidebar-card-border: rgba(166, 197, 226, 0.12);
+  --sidebar-input-bg: rgba(166, 197, 226, 0.07);
+  --sidebar-input-border: rgba(166, 197, 226, 0.14);
+  --sidebar-control-off: rgba(166, 197, 226, 0.08);
+
+  --surface-0: #1D2125;
+  --surface-1: #22272B;
+  --surface-2: #2C333A;
+  --surface-3: #38414A;
+  --surface-selected: #1C2B41;
+  --surface-selected-border: #388BFF;
+
+  --panel: #22272B;
+  --panel-border: rgba(166, 197, 226, 0.16);
+
+  --shadow-color: rgba(3, 4, 5, 0.5);
+  --shadow-opacity: 0.28;
+
+  --status-running-bg: rgba(54, 179, 126, 0.18);
+  --status-running-border: rgba(54, 179, 126, 0.4);
+  --status-running-fg: #4BCE97;
+  --status-error-bg: rgba(255, 86, 48, 0.18);
+  --status-error-border: rgba(255, 86, 48, 0.4);
+  --status-error-fg: #FF7452;
+  --status-idle-bg: rgba(101, 84, 192, 0.16);
+  --status-idle-border: rgba(101, 84, 192, 0.32);
+  --status-idle-fg: #998DD9;
+  --status-connecting-bg: rgba(255, 171, 0, 0.18);
+  --status-connecting-border: rgba(255, 171, 0, 0.4);
+  --status-connecting-fg: #FFC400;
+  --status-connected-bg: rgba(0, 184, 217, 0.18);
+  --status-connected-border: rgba(0, 184, 217, 0.4);
+  --status-connected-fg: #60C8DC;
+  --status-approval-bg: rgba(255, 86, 48, 0.16);
+  --status-approval-border: rgba(255, 171, 0, 0.4);
+  --status-approval-fg: #FFAB00;
+
+  --chat-surface-bg: #22272B;
+  --chat-assistant-bg: #2C333A;
+  --chat-assistant-border: rgba(166, 197, 226, 0.1);
+  --chat-user-bg: rgba(87, 157, 255, 0.08);
+  --chat-user-border: rgba(87, 157, 255, 0.2);
+  --chat-user-header-bg: rgba(87, 157, 255, 0.06);
+
+  --command-bg: #161A1D;
+  --command-border: rgba(166, 197, 226, 0.18);
+  --command-fg: #DEE4EA;
+  --command-copy-bg: #22272B;
+  --command-copy-hover-bg: #2C333A;
+  --command-copy-border: rgba(166, 197, 226, 0.18);
+
+  --font-display: var(--font-sans);
+  --radius-card: 8px;
+  --radius-container: 12px;
+}
+
+
+/* ══════════════════════════════════════════════
+   HEADER BAR — Atlassian blue with Rovo branding
+   ══════════════════════════════════════════════ */
+
+.ui-topbar {
+  background: #0052CC !important;
+  border-bottom: none !important;
+  box-shadow: 0 2px 8px rgba(0, 30, 80, 0.3) !important;
+}
+
+.ui-topbar,
+.ui-topbar p,
+.ui-topbar span,
+.ui-topbar button {
+  color: #FFFFFF !important;
+}
+
+.ui-topbar .ui-btn-icon:hover,
+.ui-topbar button:hover {
+  background: rgba(255, 255, 255, 0.15) !important;
+}
+
+.ui-topbar .ui-chip {
+  background: rgba(255, 255, 255, 0.18) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+  color: #FFFFFF !important;
+}
+
+
+/* ══════════════════════════════════════════════
+   HEADER LEFT — Atlassian "A" + Rovo pinwheel + text
+   ══════════════════════════════════════════════ */
+
+.ui-topbar [aria-hidden="true"] {
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Atlassian "A" logomark — white on rounded blue square */
+.ui-topbar [aria-hidden="true"]::before {
+  content: '';
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23003DA5'/%3E%3Cpath d='M13.3 18.8c-.5-.9-1.4-1-1.8-.1L6.2 28.5c-.4.8-.1 1.5.8 1.5h8.8c.5 0 1-.3 1.2-.8.9-2.5 1.5-6.3-.1-10.4z' fill='white' opacity='.7'/%3E%3Cpath d='M15.8 5.3c-2.2 4.2-2.4 9.2-.6 13.6l5 10.1c.2.4.6.7 1.1.7h8.8c1 0 1.4-.7.8-1.5L17.7 5c-.3-.5-1.1-.5-1.9.3z' fill='white'/%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  flex-shrink: 0;
+}
+
+/* Rovo pinwheel + "Powered by Rovo" via separate element */
+.ui-topbar [aria-hidden="true"]::after {
+  content: '';
+  display: inline-block;
+  width: 130px;
+  height: 22px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 150 24'%3E%3C!-- Rovo pinwheel --%3E%3Cpolygon points='12,2 8,12 12,12' fill='%2336B37E'/%3E%3Cpolygon points='22,12 12,8 12,12' fill='%23FFAB00'/%3E%3Cpolygon points='12,22 16,12 12,12' fill='%23FF5630'/%3E%3Cpolygon points='2,12 12,16 12,12' fill='%236554C0'/%3E%3C!-- Text --%3E%3Ctext x='30' y='16.5' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='12' font-weight='500' fill='white' opacity='.8'%3EPowered by Rovo%3C/text%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  flex-shrink: 0;
+}
+
+
+/* ══════════════════════════════════════════════
+   CARDS — Rovo rainbow gradient border on selected
+   Mimics the multicolor border from Rovo feature cards
+   ══════════════════════════════════════════════ */
+
+.ui-card {
+  border-radius: 8px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.ui-card-selected {
+  border-color: transparent !important;
+  background-clip: padding-box !important;
+  box-shadow:
+    inset 0 0 0 1px transparent,
+    0 0 0 2px #6554C0,
+    0 0 12px rgba(101, 84, 192, 0.2) !important;
+}
+
+/* Left accent strip on selected card — gradient instead of solid */
+.ui-card-select-indicator {
+  background: linear-gradient(180deg, #6554C0, #0065FF, #36B37E) !important;
+  width: 3px !important;
+}
+
+
+/* ══════════════════════════════════════════════
+   BUTTONS — Rovo gradient primary
+   ══════════════════════════════════════════════ */
+
+.ui-btn-primary {
+  background: linear-gradient(135deg, #0052CC, #0065FF) !important;
+  border: none !important;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 52, 128, 0.3);
+  transition: all 0.15s;
+}
+
+.ui-btn-primary:hover {
+  background: linear-gradient(135deg, #003DA5, #0052CC) !important;
+  box-shadow: 0 2px 6px rgba(0, 52, 128, 0.4);
+}
+
+/* Send button — bold gradient */
+.ui-btn-send {
+  background: linear-gradient(135deg, #6554C0, #0065FF) !important;
+  border: none !important;
+  box-shadow: 0 2px 8px rgba(101, 84, 192, 0.35);
+}
+
+.ui-btn-send:hover {
+  background: linear-gradient(135deg, #5243AA, #0052CC) !important;
+  box-shadow: 0 3px 12px rgba(101, 84, 192, 0.45);
+}
+
+.ui-btn-secondary {
+  border-radius: 4px;
+}
+
+.ui-btn-ghost {
+  border-radius: 4px;
+}
+
+
+/* ══════════════════════════════════════════════
+   CHIPS — Rovo status colors
+   ══════════════════════════════════════════════ */
+
+.ui-chip {
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+
+/* ══════════════════════════════════════════════
+   SIDEBAR — Rovo gradient accent line + Atlassian footer
+   ══════════════════════════════════════════════ */
+
+.ui-panel.ui-depth-sidepanel {
+  position: relative;
+  border-right: none !important;
+}
+
+/* Rainbow gradient accent line on sidebar right edge */
+.ui-panel.ui-depth-sidepanel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, #6554C0, #0065FF, #00B8D9, #36B37E, #FFAB00, #FF5630);
+  z-index: 10;
+  opacity: 0.6;
+}
+
+/* Atlassian "A" mark + "Atlassian" text at sidebar bottom */
+.ui-panel.ui-depth-sidepanel::after {
+  content: '';
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 110px;
+  height: 22px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 130 26'%3E%3C!-- Atlassian A mark --%3E%3Cpath d='M9.3 15c-.3-.6-1-.7-1.3-.1l-5 8.8c-.3.6-.1 1.1.6 1.1h6.5c.4 0 .7-.2.9-.6.6-1.8 1.1-4.6-.1-9.2z' fill='%23579DFF' opacity='.5'/%3E%3Cpath d='M11.1 3.2c-1.6 3.1-1.7 6.8-.4 10l3.7 7.5c.1.3.4.5.8.5h6.5c.7 0 1-.5.6-1.1L12.5 3c-.2-.4-.8-.4-1.4.2z' fill='%23579DFF' opacity='.7'/%3E%3C!-- Text --%3E%3Ctext x='30' y='18' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='12' font-weight='500' letter-spacing='.5' fill='%23579DFF' opacity='.45'%3EAtlassian%3C/text%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  pointer-events: none;
+  z-index: 5;
+}
+
+
+/* ══════════════════════════════════════════════
+   CHAT — Rovo-tinted user messages
+   ══════════════════════════════════════════════ */
+
+/* User message card — subtle purple tint */
+.dark .ui-chat-user-card {
+  border-left: 3px solid rgba(101, 84, 192, 0.5);
+}
+
+/* Assistant message card — subtle blue tint */
+.dark .ui-chat-assistant-card {
+  border-left: 3px solid rgba(87, 157, 255, 0.25);
+}
+
+
+/* ══════════════════════════════════════════════
+   SEGMENT CONTROLS — Rovo accent on active
+   ══════════════════════════════════════════════ */
+
+.ui-segment {
+  border-radius: 6px;
+}
+
+.ui-segment-item {
+  border-radius: 4px;
+}
+
+/* Active segment gets a gradient underline */
+.ui-segment-item[data-state="active"] {
+  box-shadow: inset 0 -2px 0 #579DFF;
+}
+
+
+/* ══════════════════════════════════════════════
+   SCROLLBAR — Rovo purple tint
+   ══════════════════════════════════════════════ */
+
+.dark .ui-scroll::-webkit-scrollbar-thumb {
+  background: rgba(101, 84, 192, 0.3);
+  border-radius: 4px;
+}
+
+.dark .ui-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(101, 84, 192, 0.5);
+}
+
+
+/* ══════════════════════════════════════════════
+   INPUT FOCUS — Rovo purple ring
+   ══════════════════════════════════════════════ */
+
+.ui-input:focus {
+  box-shadow: 0 0 0 2px rgba(101, 84, 192, 0.35) !important;
+  border-color: #6554C0 !important;
+}
+
+
+/* ══════════════════════════════════════════════
+   AGENT AVATAR — Rovo gradient ring on selected
+   ══════════════════════════════════════════════ */
+
+.agent-avatar-selected {
+  box-shadow: 0 0 0 2px #6554C0, 0 0 12px rgba(101, 84, 192, 0.3) !important;
+}
+
+
+/* ══════════════════════════════════════════════
+   STATUS DOTS — Rovo palette glow
+   ══════════════════════════════════════════════ */
+
+.ui-dot-status-connected {
+  box-shadow: 0 0 6px rgba(54, 179, 126, 0.5);
+}
+
+.ui-dot-status-connecting {
+  box-shadow: 0 0 6px rgba(255, 171, 0, 0.5);
+}
+
+.ui-dot-status-disconnected {
+  box-shadow: 0 0 6px rgba(101, 84, 192, 0.4);
+}
+
+
+/* ══════════════════════════════════════════════
+   COMMAND SURFACE — subtle Rovo touch
+   ══════════════════════════════════════════════ */
+
+.dark .ui-command-surface {
+  border-left: 2px solid rgba(101, 84, 192, 0.4);
+}
+
+.dark .ui-command-copy:hover {
+  background: rgba(101, 84, 192, 0.2) !important;
+}

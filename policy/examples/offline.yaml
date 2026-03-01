@@ -1,0 +1,38 @@
+# Offline Mode
+# No network access; only local filesystem reads (no writes)
+
+version: "1.0.0"
+default_action: deny
+
+tools:
+  allowlist:
+    - "cat"
+    - "less"
+    - "grep"
+    - "find"
+    - "ls"
+  denylist:
+    - "curl"
+    - "wget"
+    - "nc"
+    - "telnet"
+    - "ssh"
+    - "ping"
+    - "dig"
+    - "nslookup"
+
+domains:
+  allowlist: []  # Explicitly no network access
+
+arguments:
+  redact_patterns:
+    - "https?://[^\s]+"
+    - "[a-zA-Z0-9+/]{40,}"
+  selectors:
+    - "$.url"
+    - "$.endpoint"
+
+audit:
+  enabled: true
+  level: info
+  output: /var/log/clawshield/audit.log

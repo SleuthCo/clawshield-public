@@ -1,0 +1,22 @@
+[Unit]
+Description=ClawShield eBPF Security Monitor
+After=network.target clawshield-firewall.service
+Wants=clawshield-firewall.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/clawshield/ebpf
+EnvironmentFile=/etc/clawshield/ebpf.env
+ExecStart=/usr/bin/python3 /usr/local/bin/clawshield-ebpf -c /etc/clawshield/ebpf.yaml
+Restart=on-failure
+RestartSec=10
+
+# Hardening
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log/clawshield
+
+[Install]
+WantedBy=multi-user.target

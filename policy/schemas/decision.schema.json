@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ClawShield Decision Log Schema",
+  "description": "Schema for audit decision log entries.",
+  "type": "object",
+  "required": ["timestamp", "action", "tool", "result", "policy_id"],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "action": {
+      "type": "string",
+      "enum": ["exec", "http_get", "http_post", "read_file", "write_file"]
+    },
+    "tool": {
+      "type": "string"
+    },
+    "result": {
+      "type": "string",
+      "enum": ["allowed", "denied", "redacted"]
+    },
+    "policy_id": {
+      "type": "string"
+    },
+    "selector": {
+      "type": "string",
+      "pattern": "^\\$\\.[a-zA-Z_][a-zA-Z0-9_.]*"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

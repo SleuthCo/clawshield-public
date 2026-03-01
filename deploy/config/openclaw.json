@@ -1,0 +1,105 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.2.9",
+    "lastTouchedAt": "2026-02-25T12:00:00.000Z"
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {}
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "anthropic/claude-sonnet-4-5",
+        "fallbacks": [
+          "anthropic/claude-sonnet-4-5"
+        ]
+      },
+      "maxConcurrent": 2,
+      "timeoutSeconds": 300
+    },
+    "list": [
+      {
+        "id": "friday",
+        "name": "friday",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "pepper",
+        "name": "pepper",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "nimbus",
+        "name": "nimbus",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "sentinel",
+        "name": "sentinel",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "coda",
+        "name": "coda",
+        "model": "anthropic/claude-sonnet-4-5"
+      }
+    ]
+  },
+  "bindings": [
+    {
+      "agentId": "friday",
+      "match": {
+        "channel": "server-http"
+      }
+    },
+    {
+      "agentId": "pepper",
+      "match": {
+        "channel": "server-http"
+      }
+    },
+    {
+      "agentId": "nimbus",
+      "match": {
+        "channel": "server-http"
+      }
+    },
+    {
+      "agentId": "sentinel",
+      "match": {
+        "channel": "server-http"
+      }
+    },
+    {
+      "agentId": "coda",
+      "match": {
+        "channel": "server-http"
+      }
+    }
+  ],
+  "channels": {},
+  "gateway": {
+    "port": 18790,
+    "mode": "local",
+    "bind": "lan",
+    "http": {
+      "endpoints": {
+        "chatCompletions": { "enabled": true }
+      }
+    },
+    "auth": {
+      "mode": "token",
+      "token": "GATEWAY_TOKEN_PLACEHOLDER"
+    }
+  },
+  "skills": {
+    "install": {
+      "nodeManager": "npm"
+    },
+    "entries": {}
+  },
+  "plugins": {
+    "entries": {}
+  }
+}

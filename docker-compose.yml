@@ -1,0 +1,37 @@
+# ClawShield + OpenClaw — Docker Compose
+#
+# Usage:
+#   ANTHROPIC_API_KEY=sk-ant-... docker compose up -d
+#
+# Optional env vars:
+#   SLACK_BOT_TOKEN, SLACK_APP_TOKEN, TELEGRAM_BOT_TOKEN
+#   CLAWSHIELD_MODEL (default: anthropic/claude-sonnet-4-5)
+
+services:
+  clawshield:
+    build: .
+    image: sleuthco/clawshield-openclaw:latest
+    ports:
+      - "18789:18789"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - CLAWSHIELD_MODEL=${CLAWSHIELD_MODEL:-}
+      - CLAWSHIELD_LISTEN_PORT=18789
+      - OPENCLAW_GATEWAY_PORT=18790
+    volumes:
+      - clawshield-audit:/var/lib/clawshield
+      # Mount custom policy (optional):
+      # - ./my-policy.yaml:/etc/clawshield/policy.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:18789/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  clawshield-audit:
