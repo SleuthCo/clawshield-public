@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/SleuthCo/clawshield/proxy/internal/scanner"
@@ -121,8 +120,16 @@ const (
 	Deny  = "deny"
 )
 
-// EvaluateWithContext evaluates with context cancellation and timeout support
+// EvaluateWithContext evaluates with context cancellation and timeout support.
+// If the policy defines evaluation_timeout_ms, the evaluator enforces that timeout
+// internally, regardless of whether the caller provides a deadline.
 func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (string, string) {
+	if e.policy.EvaluationTimeoutMs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(e.policy.EvaluationTimeoutMs)*time.Millisecond)
+		defer cancel()
+	}
+
 	select {
 	case <-ctx.Done():
 		return Deny, "evaluation timeout exceeded"
@@ -270,7 +277,15 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 
 // EvaluateResponse scans an MCP server response for malicious content.
 // Returns (decision, reason) where decision is "allow" or "deny".
+// If the policy defines evaluation_timeout_ms, the evaluator enforces that timeout
+// internally, regardless of whether the caller provides a deadline.
 func (e *Evaluator) EvaluateResponse(ctx context.Context, method string, responseBody string) (string, string) {
+	if e.policy.EvaluationTimeoutMs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(e.policy.EvaluationTimeoutMs)*time.Millisecond)
+		defer cancel()
+	}
+
 	select {
 	case <-ctx.Done():
 		return Deny, "evaluation timeout exceeded"
