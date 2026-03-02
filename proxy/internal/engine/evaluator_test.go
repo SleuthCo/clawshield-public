@@ -188,7 +188,7 @@ func TestEvaluateWithContext_Allowlist(t *testing.T) {
 			name: "allowed tool in allowlist",
 			message: `{"method": "read", "params": {"path": "file.txt"}}`,
 			wantDecision: Allow,
-			wantReasonContains: "default allowed",
+			wantReasonContains: "allowlist",
 		},
 		{
 			name: "blocked tool not in allowlist",

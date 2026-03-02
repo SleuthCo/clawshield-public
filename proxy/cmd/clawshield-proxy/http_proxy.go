@@ -28,6 +28,7 @@ import (
 	"github.com/SleuthCo/clawshield/proxy/internal/audit/hashlined"
 	"github.com/SleuthCo/clawshield/proxy/internal/audit/sqlite"
 	"github.com/SleuthCo/clawshield/proxy/internal/engine"
+	"github.com/SleuthCo/clawshield/shared/bus"
 	"github.com/SleuthCo/clawshield/shared/types"
 )
 
@@ -46,11 +47,12 @@ type httpProxy struct {
 	standaloneMode bool
 	startTime      time.Time
 	controlUIDir   string
+	eventBus       *bus.EventBus // Cross-layer event bus (nil if not configured)
 }
 
 // runHTTPProxy starts the HTTP reverse proxy mode.
 func runHTTPProxy(cfg *engine.Policy, evaluator *engine.Evaluator, auditWriter *sqlite.Writer, auditDB *sql.DB,
-	gatewayURL, authToken, studioToken, listenAddr string, sessionID string, standalone bool, controlUIDir string) error {
+	gatewayURL, authToken, studioToken, listenAddr string, sessionID string, standalone bool, controlUIDir string, eventBus *bus.EventBus) error {
 
 	gw, err := url.Parse(gatewayURL)
 	if err != nil {
@@ -79,6 +81,7 @@ func runHTTPProxy(cfg *engine.Policy, evaluator *engine.Evaluator, auditWriter *
 		standaloneMode: standalone,
 		startTime:      time.Now(),
 		controlUIDir:   controlUIDir,
+		eventBus:       eventBus,
 	}
 
 	mux := http.NewServeMux()
@@ -511,6 +514,9 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 
 		if decision == engine.Deny {
 			log.Printf("BLOCKED: method=%s reason=%s", method, reason)
+			// Publish cross-layer event for blocked requests
+			evtType, sev := classifyDenyReason(reason)
+			p.publishSecurityEvent(evtType, sev, method, reason)
 			p.sendErrorFrame(ctx, client, method, reason)
 			continue
 		}
@@ -592,6 +598,9 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 
 		if respDecision == engine.Deny {
 			log.Printf("BLOCKED RESPONSE: method=%s reason=%s", respMethod, respReason)
+			// Publish cross-layer event for blocked responses
+			evtType, sev := classifyDenyReason(respReason)
+			p.publishSecurityEvent(evtType, sev, respMethod, respReason)
 			p.sendErrorFrame(ctx, client, respMethod, "response blocked by security policy")
 			continue
 		}
@@ -600,6 +609,25 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 			log.Printf("Client WS write error: %v", err)
 			return
 		}
+	}
+}
+
+// classifyDenyReason maps a deny reason string to an event type and severity
+// for cross-layer event publishing.
+func classifyDenyReason(reason string) (types.EventType, types.Severity) {
+	switch {
+	case strings.HasPrefix(reason, "prompt_injection"):
+		return types.EventInjectionBlocked, types.SeverityHigh
+	case strings.HasPrefix(reason, "malware_scan"):
+		return types.EventMalwareBlocked, types.SeverityCritical
+	case strings.HasPrefix(reason, "vuln_scan"):
+		return types.EventVulnBlocked, types.SeverityHigh
+	case strings.HasPrefix(reason, "sensitive data"):
+		return types.EventArgFilterMatch, types.SeverityMedium
+	case strings.HasPrefix(reason, "cross_scope"):
+		return types.EventPolicyDeny, types.SeverityHigh
+	default:
+		return types.EventPolicyDeny, types.SeverityLow
 	}
 }
 
@@ -685,6 +713,23 @@ func (p *httpProxy) sendErrorFrame(ctx context.Context, conn *websocket.Conn, me
 		return
 	}
 	_ = conn.Write(ctx, websocket.MessageText, data)
+}
+
+// publishSecurityEvent sends a security event to the cross-layer event bus.
+// This enables other layers (firewall, eBPF monitor) to react to proxy-level detections.
+func (p *httpProxy) publishSecurityEvent(eventType types.EventType, severity types.Severity, tool, reason string) {
+	if p.eventBus == nil {
+		return
+	}
+	p.eventBus.Publish(&types.SecurityEvent{
+		EventType: eventType,
+		Severity:  severity,
+		Source:    types.SourceProxy,
+		Timestamp: time.Now(),
+		SessionID: p.sessionID,
+		Tool:      tool,
+		Reason:    reason,
+	})
 }
 
 // logBridgeDecision writes an audit entry with bridge-specific metadata (M3).
