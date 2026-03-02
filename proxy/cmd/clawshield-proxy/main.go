@@ -23,6 +23,7 @@ import (
 	"github.com/SleuthCo/clawshield/proxy/internal/audit/sqlite"
 	"github.com/SleuthCo/clawshield/proxy/internal/config"
 	"github.com/SleuthCo/clawshield/proxy/internal/engine"
+	"github.com/SleuthCo/clawshield/shared/bus"
 	"github.com/SleuthCo/clawshield/shared/types"
 )
 
@@ -95,19 +96,56 @@ func main() {
 		}
 		log.Println("Starting in HTTP proxy mode")
 
+		// Initialize cross-layer event bus
+		eventBus := bus.New()
+
+		// Start Unix socket listener for external event producers (eBPF, firewall)
+		socketPath := bus.DefaultSocketPath
+		if cfg.Adaptive != nil && cfg.Adaptive.SocketPath != "" {
+			socketPath = cfg.Adaptive.SocketPath
+		}
+		socketListener := bus.NewSocketListener(socketPath, eventBus)
+		if err := socketListener.Start(); err != nil {
+			log.Printf("WARNING: failed to start event socket listener: %v (cross-layer events disabled)", err)
+		}
+
+		// Initialize adaptive controller if enabled in policy
+		var adaptiveCtrl *bus.AdaptiveController
+		if cfg.Adaptive != nil && cfg.Adaptive.Enabled {
+			adaptiveCtrl = bus.NewAdaptiveController(eventBus, cfg.Adaptive.Rules)
+
+			// Wire adaptive callbacks to the evaluator
+			adaptiveCtrl.OnElevateSensitivity = func(level string, duration time.Duration) {
+				evaluator.SetSensitivityOverride(level, time.Now().Add(duration))
+				log.Printf("ADAPTIVE: injection sensitivity elevated to %s for %s", level, duration)
+			}
+			adaptiveCtrl.OnElevateDefaultDeny = func(duration time.Duration) {
+				evaluator.SetDefaultActionOverride("deny", time.Now().Add(duration))
+				log.Printf("ADAPTIVE: default action overridden to deny for %s", duration)
+			}
+
+			adaptiveCtrl.Start()
+			log.Printf("Adaptive controller enabled with %d rules", len(cfg.Adaptive.Rules))
+		}
+
 		// Graceful shutdown on signal
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 		go func() {
 			<-sigCh
 			log.Println("Received shutdown signal, closing...")
+			if adaptiveCtrl != nil {
+				adaptiveCtrl.Stop()
+			}
+			socketListener.Stop()
+			eventBus.Close()
 			if auditWriter != nil {
 				auditWriter.Close()
 			}
 			os.Exit(0)
 		}()
 
-		if err := runHTTPProxy(cfg, evaluator, auditWriter, auditDB2, *gatewayURL, *gatewayToken, *studioToken, *listenAddr, sessionID, *standalone, *controlUIDir); err != nil {
+		if err := runHTTPProxy(cfg, evaluator, auditWriter, auditDB2, *gatewayURL, *gatewayToken, *studioToken, *listenAddr, sessionID, *standalone, *controlUIDir, eventBus); err != nil {
 			log.Fatalf("HTTP proxy error: %v", err)
 		}
 	} else {
@@ -381,12 +419,36 @@ func initAudit(auditDBPath string) (*sqlite.Writer, *sql.DB) {
 		log.Fatalf("Failed to initialize audit schema: %v", err)
 	}
 
+	// Add security_events table for cross-layer event audit trail
+	securityEventsSchema := `
+	CREATE TABLE IF NOT EXISTS security_events (
+		event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		event_type TEXT NOT NULL,
+		severity TEXT NOT NULL,
+		source TEXT NOT NULL,
+		session_id TEXT,
+		pid INTEGER,
+		tool TEXT,
+		reason TEXT,
+		details JSON,
+		reaction TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_security_events_timestamp ON security_events(timestamp);
+	CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_events(event_type);
+	CREATE INDEX IF NOT EXISTS idx_security_events_source ON security_events(source);
+	`
+	if _, err := db.Exec(securityEventsSchema); err != nil {
+		log.Printf("Security events schema warning: %v", err)
+	}
+
 	// Migrate: add columns if they don't exist (ALTER TABLE ADD COLUMN is safe in SQLite)
 	migrations := []string{
 		"ALTER TABLE decisions ADD COLUMN correlation_id TEXT",
 		"ALTER TABLE decisions ADD COLUMN classification TEXT",
 		"ALTER TABLE decisions ADD COLUMN source TEXT",
 		"ALTER TABLE decisions ADD COLUMN response_blocked INTEGER DEFAULT 0",
+		"ALTER TABLE decisions ADD COLUMN agent_name TEXT",
 	}
 	for _, m := range migrations {
 		if _, err := db.Exec(m); err != nil {

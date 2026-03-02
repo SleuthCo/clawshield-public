@@ -204,6 +204,13 @@ class AlertHandler:
         self.console = config.get('alerts', {}).get('console', True)
         self._alert_queue = Queue()
         self._telegram_thread = None
+        self._socket_conn = None
+
+        # Cross-layer event bus socket path
+        self._socket_path = config.get('alerts', {}).get(
+            'event_socket', '/tmp/clawshield-events.sock'
+        )
+        self._connect_event_socket()
 
         # Start telegram thread if configured
         if self.telegram_token and self.telegram_chat and HTTPX_AVAILABLE:
@@ -239,7 +246,45 @@ class AlertHandler:
         lines.append(f"\n_Detected at {datetime.now().strftime('%H:%M:%S')}_")
         return "\n".join(lines)
 
-    def send(self, severity: str, title: str, details: dict):
+    def _connect_event_socket(self):
+        """Connect to the ClawShield cross-layer event bus Unix socket."""
+        import socket as sock_mod
+        try:
+            s = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect(self._socket_path)
+            self._socket_conn = s
+            print(f"Connected to event bus: {self._socket_path}")
+        except Exception as e:
+            print(f"Event bus socket not available ({self._socket_path}): {e}")
+            print("Cross-layer event publishing disabled (proxy not running?)")
+            self._socket_conn = None
+
+    def _publish_event(self, event_type: str, severity: str, details: dict):
+        """Publish a SecurityEvent to the cross-layer event bus via Unix socket."""
+        if self._socket_conn is None:
+            return
+
+        event = {
+            'event_type': event_type,
+            'severity': severity,
+            'source': 'ebpf',
+            'timestamp': datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+            'pid': details.get('PID', 0),
+            'tool': details.get('Process', details.get('Command', '')),
+            'reason': f"{event_type}: {details.get('Path', details.get('File', details.get('Destination', '')))}",
+            'details': {str(k): str(v) for k, v in details.items()},
+        }
+
+        try:
+            line = json.dumps(event) + '\n'
+            self._socket_conn.sendall(line.encode('utf-8'))
+        except Exception:
+            # Connection lost — try to reconnect once
+            self._socket_conn = None
+            self._connect_event_socket()
+
+    def send(self, severity: str, title: str, details: dict, event_type: str = None):
         msg = self._format_alert(severity, title, details)
 
         # Console output
@@ -265,10 +310,19 @@ class AlertHandler:
         if self._telegram_thread:
             self._alert_queue.put(msg)
 
+        # Cross-layer event bus (publish to proxy/firewall)
+        if event_type:
+            self._publish_event(event_type, severity, details)
+
     def stop(self):
         if self._telegram_thread:
             self._alert_queue.put(None)
             self._telegram_thread.join(timeout=2)
+        if self._socket_conn:
+            try:
+                self._socket_conn.close()
+            except Exception:
+                pass
 
 
 # ============================================================================
@@ -350,7 +404,7 @@ class SecurityMonitor:
                 'User': event.uid,
                 'Command': comm,
                 'Path': filename
-            })
+            }, event_type='exec_suspicious')
 
         # Fork bomb detection
         now = datetime.now().timestamp()
@@ -365,7 +419,7 @@ class SecurityMonitor:
                 'Parent PID': event.ppid,
                 'Spawns in 60s': len(self.exec_history[event.ppid]),
                 'Latest child': comm
-            })
+            }, event_type='exec_suspicious')
 
     def _handle_conn_event(self, cpu, data, size):
         event = self.bpf_objects['network']['conn_events'].event(data)
@@ -379,8 +433,9 @@ class SecurityMonitor:
                 'PID': event.pid,
                 'Process': comm,
                 'Destination': f"{daddr}:{dport}",
-                'User': event.uid
-            })
+                'User': event.uid,
+                'dest_ip': daddr,
+            }, event_type='exec_suspicious')
 
         # Port scan detection
         self.conn_history[event.pid].add(dport)
@@ -389,8 +444,9 @@ class SecurityMonitor:
             self.alerts.send('medium', 'Possible Port Scan', {
                 'PID': event.pid,
                 'Process': comm,
-                'Unique ports': len(self.conn_history[event.pid])
-            })
+                'Unique ports': len(self.conn_history[event.pid]),
+                'dest_ip': daddr,
+            }, event_type='port_scan')
 
     def _handle_file_event(self, cpu, data, size):
         event = self.bpf_objects['file']['file_events'].event(data)
@@ -408,7 +464,7 @@ class SecurityMonitor:
                 'File': filename,
                 'Mode': flags,
                 'User': event.uid
-            })
+            }, event_type='file_access')
 
     def _handle_privesc_event(self, cpu, data, size):
         event = self.bpf_objects['privesc']['privesc_events'].event(data)
@@ -419,7 +475,7 @@ class SecurityMonitor:
             'Process': comm,
             'From UID': event.old_uid,
             'To UID': event.new_uid
-        })
+        }, event_type='privesc')
 
     @staticmethod
     def _int_to_ip(addr: int) -> str:
