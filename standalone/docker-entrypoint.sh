@@ -147,7 +147,13 @@ cleanup() {
 trap cleanup TERM INT
 
 # --- Monitor gateway process ---
-# If gateway dies, restart it in background
+# If gateway dies, restart it with exponential backoff and a max retry limit.
+# This prevents infinite CPU-burning restart loops when the gateway has a
+# persistent startup error (e.g., invalid config, missing API key).
+MAX_GATEWAY_RESTARTS=5
+RESTART_COUNT=0
+BACKOFF_SECONDS=2
+
 monitor_gateway() {
   while true; do
     wait $GW_PID 2>/dev/null
@@ -156,10 +162,31 @@ monitor_gateway() {
     if [ $EXIT_CODE -eq 0 ]; then
       break
     fi
-    echo "WARNING: Gateway exited with code $EXIT_CODE, restarting in 2s..."
-    sleep 2
+
+    RESTART_COUNT=$((RESTART_COUNT + 1))
+    if [ $RESTART_COUNT -gt $MAX_GATEWAY_RESTARTS ]; then
+      echo "FATAL: Gateway has crashed $MAX_GATEWAY_RESTARTS times — giving up. Check gateway logs for errors."
+      # Kill the proxy too since it's useless without the gateway
+      kill $$ 2>/dev/null || true
+      exit 1
+    fi
+
+    echo "WARNING: Gateway exited with code $EXIT_CODE (restart $RESTART_COUNT/$MAX_GATEWAY_RESTARTS), retrying in ${BACKOFF_SECONDS}s..."
+    sleep $BACKOFF_SECONDS
+    # Exponential backoff: 2s, 4s, 8s, 16s, 32s
+    BACKOFF_SECONDS=$((BACKOFF_SECONDS * 2))
+
     su -s /bin/sh clawshield -c "cd /home/clawshield/.openclaw && ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY}' node /usr/local/lib/node_modules/openclaw/openclaw.mjs gateway" &
     GW_PID=$!
+
+    # Reset backoff if gateway stays up for more than 60 seconds
+    (
+      sleep 60
+      if kill -0 $GW_PID 2>/dev/null; then
+        RESTART_COUNT=0
+        BACKOFF_SECONDS=2
+      fi
+    ) &
   done
 }
 monitor_gateway &

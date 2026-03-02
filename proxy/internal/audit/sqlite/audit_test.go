@@ -161,3 +161,370 @@ func TestReader_Sessions(t *testing.T) {
 		t.Error("expected at least one session")
 	}
 }
+
+// =============================================================================
+// CRITICAL-4: Comprehensive reader.go tests
+// =============================================================================
+
+func TestReader_QueryDecisions_NoFilters(t *testing.T) {
+	// Use a fresh DB to avoid interference from other tests
+	dbFile := "./test_reader_nofilter.db"
+	os.RemoveAll(dbFile)
+	defer os.Remove(dbFile)
+
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	schema, _ := os.ReadFile("schema.sql")
+	db.Exec(string(schema))
+
+	w, _ := sqlite.NewWriter(db)
+	for i := 0; i < 5; i++ {
+		w.Write(&types.Decision{
+			Timestamp:     time.Now(),
+			SessionID:     fmt.Sprintf("sess-%d", i),
+			Tool:          "read",
+			ArgumentsHash: "hash",
+			Decision:      "allow",
+			Reason:        "ok",
+			PolicyVersion: "1.0",
+		})
+	}
+	w.Close()
+
+	r := sqlite.NewReader(db)
+	logs, err := r.QueryDecisions(context.Background())
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(logs) != 5 {
+		t.Errorf("expected 5 decisions, got %d", len(logs))
+	}
+}
+
+func TestReader_QueryDecisions_WithDecisionFilter(t *testing.T) {
+	dbFile := "./test_reader_decision.db"
+	os.RemoveAll(dbFile)
+	defer os.Remove(dbFile)
+
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	schema, _ := os.ReadFile("schema.sql")
+	db.Exec(string(schema))
+
+	w, _ := sqlite.NewWriter(db)
+	w.Write(&types.Decision{Timestamp: time.Now(), SessionID: "s1", Tool: "read", ArgumentsHash: "h", Decision: "allow", PolicyVersion: "1.0"})
+	w.Write(&types.Decision{Timestamp: time.Now(), SessionID: "s2", Tool: "write", ArgumentsHash: "h", Decision: "deny", PolicyVersion: "1.0"})
+	w.Write(&types.Decision{Timestamp: time.Now(), SessionID: "s3", Tool: "exec", ArgumentsHash: "h", Decision: "deny", PolicyVersion: "1.0"})
+	w.Close()
+
+	r := sqlite.NewReader(db)
+	logs, err := r.QueryDecisions(context.Background(), sqlite.WithDecision("deny"))
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Errorf("expected 2 deny decisions, got %d", len(logs))
+	}
+	for _, l := range logs {
+		if l.Decision.Decision != "deny" {
+			t.Errorf("expected decision=deny, got %s", l.Decision.Decision)
+		}
+	}
+}
+
+func TestReader_QueryDecisions_WithToolFilter(t *testing.T) {
+	dbFile := "./test_reader_tool.db"
+	os.RemoveAll(dbFile)
+	defer os.Remove(dbFile)
+
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	schema, _ := os.ReadFile("schema.sql")
+	db.Exec(string(schema))
+
+	w, _ := sqlite.NewWriter(db)
+	w.Write(&types.Decision{Timestamp: time.Now(), SessionID: "s1", Tool: "file.read", ArgumentsHash: "h", Decision: "allow", PolicyVersion: "1.0"})
+	w.Write(&types.Decision{Timestamp: time.Now(), SessionID: "s2", Tool: "file.write", ArgumentsHash: "h", Decision: "allow", PolicyVersion: "1.0"})
+	w.Write(&types.Decision{Timestamp: time.Now(), SessionID: "s3", Tool: "shell.exec", ArgumentsHash: "h", Decision: "deny", PolicyVersion: "1.0"})
+	w.Close()
+
+	r := sqlite.NewReader(db)
+	// Tool filter uses LIKE %tool% so "file" should match both file.read and file.write
+	logs, err := r.QueryDecisions(context.Background(), sqlite.WithTool("file"))
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Errorf("expected 2 file.* decisions, got %d", len(logs))
+	}
+}
+
+func TestReader_QueryDecisions_WithTimeRange(t *testing.T) {
+	dbFile := "./test_reader_time.db"
+	os.RemoveAll(dbFile)
+	defer os.Remove(dbFile)
+
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	schema, _ := os.ReadFile("schema.sql")
+	db.Exec(string(schema))
+
+	now := time.Now()
+	old := now.Add(-2 * time.Hour)
+	recent := now.Add(-10 * time.Minute)
+
+	w, _ := sqlite.NewWriter(db)
+	w.Write(&types.Decision{Timestamp: old, SessionID: "s1", Tool: "read", ArgumentsHash: "h", Decision: "allow", PolicyVersion: "1.0"})
+	w.Write(&types.Decision{Timestamp: recent, SessionID: "s2", Tool: "read", ArgumentsHash: "h", Decision: "allow", PolicyVersion: "1.0"})
+	w.Write(&types.Decision{Timestamp: now, SessionID: "s3", Tool: "read", ArgumentsHash: "h", Decision: "allow", PolicyVersion: "1.0"})
+	w.Close()
+
+	r := sqlite.NewReader(db)
+	// Query only decisions from the last 30 minutes
+	logs, err := r.QueryDecisions(context.Background(), sqlite.WithTimeRange(now.Add(-30*time.Minute), now.Add(time.Minute)))
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Errorf("expected 2 recent decisions, got %d", len(logs))
+	}
+}
+
+func TestReader_QueryDecisions_WithIncludeToolCall(t *testing.T) {
+	dbFile := "./test_reader_toolcall.db"
+	os.RemoveAll(dbFile)
+	defer os.Remove(dbFile)
+
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	schema, _ := os.ReadFile("schema.sql")
+	db.Exec(string(schema))
+
+	// Write a decision, then manually insert tool_call data since
+	// WriteDecision currently does NOT persist tool call data (known bug —
+	// it delegates to Write() which drops the toolCall parameter).
+	w, _ := sqlite.NewWriter(db)
+	w.Write(&types.Decision{
+		Timestamp:     time.Now(),
+		SessionID:     "s1",
+		Tool:          "read",
+		ArgumentsHash: "h",
+		Decision:      "allow",
+		PolicyVersion: "1.0",
+	})
+	w.Close()
+
+	// Manually insert tool_call data for the decision we just wrote
+	var decisionID int64
+	db.QueryRow("SELECT decision_id FROM decisions WHERE session_id = 's1'").Scan(&decisionID)
+	db.Exec(`INSERT INTO tool_calls (decision_id, request_json, response_json) VALUES (?, ?, ?)`,
+		decisionID, `{"method":"read"}`, `{"result":"ok"}`)
+
+	r := sqlite.NewReader(db)
+	logs, err := r.QueryDecisions(context.Background(), sqlite.WithIncludeToolCall())
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatal("expected at least 1 log")
+	}
+	if logs[0].ToolCall == nil {
+		t.Error("expected tool call data to be included")
+	}
+	if logs[0].ToolCall != nil && string(logs[0].ToolCall.RequestJSON) != `{"method":"read"}` {
+		t.Errorf("unexpected request JSON: %s", logs[0].ToolCall.RequestJSON)
+	}
+}
+
+func TestReader_QueryDecisions_EmptyDB(t *testing.T) {
+	dbFile := "./test_reader_empty.db"
+	os.RemoveAll(dbFile)
+	defer os.Remove(dbFile)
+
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	schema, _ := os.ReadFile("schema.sql")
+	db.Exec(string(schema))
+
+	r := sqlite.NewReader(db)
+	logs, err := r.QueryDecisions(context.Background())
+	if err != nil {
+		t.Fatalf("query on empty DB should not error: %v", err)
+	}
+	if len(logs) != 0 {
+		t.Errorf("expected 0 decisions from empty DB, got %d", len(logs))
+	}
+}
+
+func TestReader_QueryDecisions_CombinedFilters(t *testing.T) {
+	dbFile := "./test_reader_combined.db"
+	os.RemoveAll(dbFile)
+	defer os.Remove(dbFile)
+
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	schema, _ := os.ReadFile("schema.sql")
+	db.Exec(string(schema))
+
+	now := time.Now()
+	w, _ := sqlite.NewWriter(db)
+	w.Write(&types.Decision{Timestamp: now, SessionID: "s1", Tool: "file.read", ArgumentsHash: "h", Decision: "allow", PolicyVersion: "1.0"})
+	w.Write(&types.Decision{Timestamp: now, SessionID: "s2", Tool: "file.read", ArgumentsHash: "h", Decision: "deny", PolicyVersion: "1.0"})
+	w.Write(&types.Decision{Timestamp: now, SessionID: "s3", Tool: "shell.exec", ArgumentsHash: "h", Decision: "deny", PolicyVersion: "1.0"})
+	w.Close()
+
+	r := sqlite.NewReader(db)
+	// Combine tool + decision filter
+	logs, err := r.QueryDecisions(context.Background(), sqlite.WithTool("file"), sqlite.WithDecision("deny"))
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Errorf("expected 1 deny+file decision, got %d", len(logs))
+	}
+}
+
+func TestReader_QueryDecisions_OrderByTimestampDesc(t *testing.T) {
+	dbFile := "./test_reader_order.db"
+	os.RemoveAll(dbFile)
+	defer os.Remove(dbFile)
+
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	schema, _ := os.ReadFile("schema.sql")
+	db.Exec(string(schema))
+
+	w, _ := sqlite.NewWriter(db)
+	t1 := time.Now().Add(-2 * time.Hour)
+	t2 := time.Now().Add(-1 * time.Hour)
+	t3 := time.Now()
+	w.Write(&types.Decision{Timestamp: t1, SessionID: "oldest", Tool: "read", ArgumentsHash: "h", Decision: "allow", PolicyVersion: "1.0"})
+	w.Write(&types.Decision{Timestamp: t3, SessionID: "newest", Tool: "read", ArgumentsHash: "h", Decision: "allow", PolicyVersion: "1.0"})
+	w.Write(&types.Decision{Timestamp: t2, SessionID: "middle", Tool: "read", ArgumentsHash: "h", Decision: "allow", PolicyVersion: "1.0"})
+	w.Close()
+
+	r := sqlite.NewReader(db)
+	logs, err := r.QueryDecisions(context.Background())
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(logs) != 3 {
+		t.Fatalf("expected 3 decisions, got %d", len(logs))
+	}
+	// Should be ordered newest first
+	if logs[0].Decision.SessionID != "newest" {
+		t.Errorf("expected first result to be 'newest', got %q", logs[0].Decision.SessionID)
+	}
+	if logs[2].Decision.SessionID != "oldest" {
+		t.Errorf("expected last result to be 'oldest', got %q", logs[2].Decision.SessionID)
+	}
+}
+
+func TestReader_QueryIntegrityCheckpoints(t *testing.T) {
+	dbFile := "./test_reader_checkpoints.db"
+	os.RemoveAll(dbFile)
+	defer os.Remove(dbFile)
+
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	schema, _ := os.ReadFile("schema.sql")
+	db.Exec(string(schema))
+
+	// Insert checkpoints directly
+	db.Exec(`INSERT INTO integrity_checkpoints (timestamp, db_hash, reason) VALUES (?, ?, ?)`, time.Now(), "abc123", "startup")
+	db.Exec(`INSERT INTO integrity_checkpoints (timestamp, db_hash, reason) VALUES (?, ?, ?)`, time.Now(), "def456", "batch flush")
+
+	r := sqlite.NewReader(db)
+	checks, err := r.QueryIntegrityCheckpoints(context.Background())
+	if err != nil {
+		t.Fatalf("query checkpoints failed: %v", err)
+	}
+	if len(checks) != 2 {
+		t.Errorf("expected 2 checkpoints, got %d", len(checks))
+	}
+}
+
+func TestReader_QueryPolicyChanges_EmptyTimeRange(t *testing.T) {
+	dbFile := "./test_reader_policy_empty.db"
+	os.RemoveAll(dbFile)
+	defer os.Remove(dbFile)
+
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	schema, _ := os.ReadFile("schema.sql")
+	db.Exec(string(schema))
+
+	r := sqlite.NewReader(db)
+	// Both zero times — should return all (none in empty DB)
+	changes, err := r.QueryPolicyChanges(context.Background(), time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Errorf("expected 0 changes from empty DB, got %d", len(changes))
+	}
+}
+
+func TestReader_QuerySessions_EmptyDB(t *testing.T) {
+	dbFile := "./test_reader_sessions_empty.db"
+	os.RemoveAll(dbFile)
+	defer os.Remove(dbFile)
+
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	schema, _ := os.ReadFile("schema.sql")
+	db.Exec(string(schema))
+
+	r := sqlite.NewReader(db)
+	sessions, err := r.QuerySessions(context.Background(), time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("query sessions on empty DB should not error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Errorf("expected 0 sessions, got %d", len(sessions))
+	}
+}

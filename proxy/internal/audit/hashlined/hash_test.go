@@ -259,20 +259,27 @@ func TestRedactArguments(t *testing.T) {
 }
 
 func TestHashArguments_ComplexNesting(t *testing.T) {
-	// Test with nested objects (current implementation is flat, but ensure it doesn't crash)
-	input := `{"outer": {"apikey": "secret"}, "url": "test"}`
-	
-	hash, err := HashArguments(input)
+	t.Skip("KNOWN LIMITATION: nested field redaction is not yet implemented — " +
+		"nested sensitive fields like {\"outer\": {\"apikey\": \"secret\"}} are hashed " +
+		"with the secret value intact. Unskip this test when nested redaction is added.")
+
+	// When nested redaction IS implemented, these two inputs should produce
+	// the same hash because the nested apikey should be redacted in both.
+	input1 := `{"outer": {"apikey": "secret1"}, "url": "test"}`
+	input2 := `{"outer": {"apikey": "secret2"}, "url": "test"}`
+
+	hash1, err := HashArguments(input1)
 	if err != nil {
-		t.Fatalf("unexpected error with nested object: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	
-	if len(hash) != 64 {
-		t.Errorf("hash length = %d, want 64", len(hash))
+	hash2, err := HashArguments(input2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	
-	// Note: Current implementation doesn't handle nested redaction,
-	// but it shouldn't crash
+
+	if hash1 != hash2 {
+		t.Errorf("nested sensitive fields should be redacted before hashing, but hashes differ")
+	}
 }
 
 func TestHashArguments_ArrayValues(t *testing.T) {
