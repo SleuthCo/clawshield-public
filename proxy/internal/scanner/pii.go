@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/SleuthCo/clawshield/shared/types"
 )
 
 // PIIConfig holds the policy configuration for PII scanning.
@@ -116,26 +118,46 @@ func NewPIIScanner(cfg *PIIConfig) *PIIScanner {
 	return s
 }
 
-// ScanRequest checks outbound tool arguments for PII.
-func (s *PIIScanner) ScanRequest(method string, decodedParams string) (bool, string) {
+// ScanRequestDetail checks outbound tool arguments for PII.
+// Returns a *types.ScanResult if PII is detected, nil otherwise.
+func (s *PIIScanner) ScanRequestDetail(method string, decodedParams string) *types.ScanResult {
 	if s == nil || !s.scanRequests {
-		return false, ""
+		return nil
 	}
 	if s.excludeTools[method] {
-		return false, ""
+		return nil
 	}
-	return s.scan(decodedParams)
+	return s.scanDetail(decodedParams)
+}
+
+// ScanRequest checks outbound tool arguments for PII.
+func (s *PIIScanner) ScanRequest(method string, decodedParams string) (bool, string) {
+	result := s.ScanRequestDetail(method, decodedParams)
+	if result != nil {
+		return true, result.Description
+	}
+	return false, ""
+}
+
+// ScanResponseDetail checks inbound tool responses for PII.
+// Returns a *types.ScanResult if PII is detected, nil otherwise.
+func (s *PIIScanner) ScanResponseDetail(method string, responseBody string) *types.ScanResult {
+	if s == nil || !s.scanResponses {
+		return nil
+	}
+	if s.excludeTools[method] {
+		return nil
+	}
+	return s.scanDetail(responseBody)
 }
 
 // ScanResponse checks inbound tool responses for PII.
 func (s *PIIScanner) ScanResponse(method string, responseBody string) (bool, string) {
-	if s == nil || !s.scanResponses {
-		return false, ""
+	result := s.ScanResponseDetail(method, responseBody)
+	if result != nil {
+		return true, result.Description
 	}
-	if s.excludeTools[method] {
-		return false, ""
-	}
-	return s.scan(responseBody)
+	return false, ""
 }
 
 // Action returns the configured action ("block" or "redact").
@@ -181,7 +203,7 @@ func (s *PIIScanner) RedactPII(text string) (string, []string) {
 	return result, redacted
 }
 
-func (s *PIIScanner) scan(text string) (bool, string) {
+func (s *PIIScanner) scanDetail(text string) *types.ScanResult {
 	for _, rule := range s.rules {
 		if rule.confidence < s.minConfidence {
 			continue
@@ -192,8 +214,26 @@ func (s *PIIScanner) scan(text string) (bool, string) {
 			if rule.validate != nil && !rule.validate(match) {
 				continue
 			}
-			return true, fmt.Sprintf("pii_scan: %s detected (%s)", rule.name, rule.description)
+			ruleID := toSnakeCase(rule.name)
+			confidence := confidenceToString(rule.confidence)
+			return &types.ScanResult{
+				Scanner:      "pii",
+				RuleID:       ruleID,
+				Description:  fmt.Sprintf("pii_scan: %s detected (%s)", rule.name, rule.description),
+				MatchExcerpt: types.RedactExcerpt(match),
+				Confidence:   confidence,
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
+	}
+	return nil
+}
+
+func (s *PIIScanner) scan(text string) (bool, string) {
+	result := s.scanDetail(text)
+	if result != nil {
+		return true, result.Description
 	}
 	return false, ""
 }
@@ -514,4 +554,18 @@ func containsPIIRedacted(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// confidenceToString maps piiConfidence int to string representation.
+func confidenceToString(c piiConfidence) string {
+	switch c {
+	case confidenceLow:
+		return "low"
+	case confidenceMedium:
+		return "medium"
+	case confidenceHigh:
+		return "high"
+	default:
+		return "medium"
+	}
 }

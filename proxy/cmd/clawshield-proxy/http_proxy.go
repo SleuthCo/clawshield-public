@@ -304,11 +304,11 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		ct := r.Header.Get("Content-Type")
 		if strings.Contains(ct, "application/json") && len(bodyBytes) > 0 {
 			evalCtx, evalCancel := context.WithTimeout(r.Context(), time.Duration(p.timeoutMs)*time.Millisecond)
-			decision, reason := p.evaluator.EvaluateWithContext(evalCtx, string(bodyBytes))
+			decision, reason, details := p.evaluator.EvaluateWithDetails(evalCtx, string(bodyBytes))
 			evalCancel()
 
-			p.logBridgeDecision(r.Method+" "+r.URL.Path, string(bodyBytes), decision, reason,
-				correlationID, classification, source, agentName)
+			p.logBridgeDecisionWithDetails(r.Method+" "+r.URL.Path, string(bodyBytes), decision, reason,
+				correlationID, classification, source, agentName, details)
 
 			if decision == engine.Deny {
 				log.Printf("BLOCKED HTTP REQUEST: %s %s reason=%s agent=%s", r.Method, r.URL.Path, reason, agentName)
@@ -443,6 +443,7 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 						Source:          source,
 						ResponseBlocked: respBlocked,
 						AgentName:       agentName,
+						Details:         respResult.Details,
 					}
 					if err := p.auditWriter.Write(&dec); err != nil {
 						log.Printf("SECURITY WARNING: audit write failed for HTTP response scan: %v", err)
@@ -675,7 +676,7 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 		// Full evaluator pipeline (denylist, allowlist, arg filters, vuln scan, injection scan)
 		evalStart := time.Now()
 		evalCtx, evalCancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
-		decision, reason := p.evaluator.EvaluateWithContext(evalCtx, message)
+		decision, reason, details := p.evaluator.EvaluateWithDetails(evalCtx, message)
 		evalCancel()
 
 		method := rpc.Method
@@ -684,7 +685,7 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 		}
 
 		// Audit log
-		p.logDecision(method, string(rpc.Params), decision, reason)
+		p.logDecisionWithDetails(method, string(rpc.Params), decision, reason, details)
 
 		p.metrics.RecordRequest()
 		p.metrics.RecordEvaluationLatency(time.Since(evalStart))
@@ -766,11 +767,14 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 		respDecision := "allow"
 		respReason := "response clean"
 		scannerType := ""
+		var respResult engine.ResponseResult
+		hasRespResult := false
 
 		if p.evaluator.InjectionDetector() != nil || p.evaluator.MalwareScanner() != nil || p.evaluator.SecretsScanner() != nil || p.evaluator.PIIScanner() != nil {
 			p.metrics.RecordResponseScanned()
 			evalCtx, evalCancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
-			respResult := p.evaluator.EvaluateResponse(evalCtx, respMethod, message)
+			respResult = p.evaluator.EvaluateResponse(evalCtx, respMethod, message)
+			hasRespResult = true
 			evalCancel()
 			respDecision = respResult.Decision
 			respReason = respResult.Reason
@@ -809,6 +813,9 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 				Reason:        respReason,
 				PolicyVersion: "1.0",
 				ScannerType:   scannerType,
+			}
+			if hasRespResult {
+				auditDec.Details = respResult.Details
 			}
 			if err := p.auditWriter.Write(&auditDec); err != nil {
 				log.Printf("SECURITY WARNING: audit write failed for WS response: %v", err)
@@ -1023,6 +1030,76 @@ func (p *httpProxy) logBridgeDecision(method, params, decision, reason, correlat
 		Classification: classification,
 		Source:         source,
 		AgentName:      agentName,
+	}
+	if err := p.auditWriter.Write(&dec); err != nil {
+		log.Printf("Audit write error: %v", err)
+	}
+}
+
+// logDecisionWithDetails writes an audit entry for a request evaluation with details.
+func (p *httpProxy) logDecisionWithDetails(method, params, decision, reason string, details *types.DecisionDetail) {
+	if p.auditWriter == nil {
+		return
+	}
+	argsHash := params
+	if h, err := hashlined.HashArguments(params); err == nil {
+		argsHash = h
+	}
+	scanType := ""
+	if decision == engine.Deny && len(reason) > 0 {
+		if strings.HasPrefix(reason, "vuln_scan:") {
+			scanType = "vuln"
+		} else if strings.HasPrefix(reason, "prompt_injection:") {
+			scanType = "injection"
+		}
+	}
+	auditDec := types.Decision{
+		Timestamp:     time.Now(),
+		SessionID:     p.sessionID,
+		Tool:          method,
+		ArgumentsHash: argsHash,
+		Decision:      decision,
+		Reason:        reason,
+		PolicyVersion: "1.0",
+		ScannerType:   scanType,
+		Details:       details,
+	}
+	if err := p.auditWriter.Write(&auditDec); err != nil {
+		log.Printf("Audit write error: %v", err)
+	}
+}
+
+// logBridgeDecisionWithDetails writes an audit entry with bridge-specific metadata and details.
+func (p *httpProxy) logBridgeDecisionWithDetails(method, params, decision, reason, correlationID, classification, source, agentName string, details *types.DecisionDetail) {
+	if p.auditWriter == nil {
+		return
+	}
+	argsHash := params
+	if h, err := hashlined.HashArguments(params); err == nil {
+		argsHash = h
+	}
+	scanType := ""
+	if decision == engine.Deny && len(reason) > 0 {
+		if strings.HasPrefix(reason, "vuln_scan:") {
+			scanType = "vuln"
+		} else if strings.HasPrefix(reason, "prompt_injection:") {
+			scanType = "injection"
+		}
+	}
+	dec := types.Decision{
+		Timestamp:      time.Now(),
+		SessionID:      p.sessionID,
+		Tool:           method,
+		ArgumentsHash:  argsHash,
+		Decision:       decision,
+		Reason:         reason,
+		PolicyVersion:  "1.0",
+		ScannerType:    scanType,
+		CorrelationID:  correlationID,
+		Classification: classification,
+		Source:         source,
+		AgentName:      agentName,
+		Details:        details,
 	}
 	if err := p.auditWriter.Write(&dec); err != nil {
 		log.Printf("Audit write error: %v", err)

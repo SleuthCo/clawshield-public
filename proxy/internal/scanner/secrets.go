@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/SleuthCo/clawshield/shared/types"
 )
 
 // SecretsConfig holds the policy configuration for secrets scanning.
@@ -122,26 +124,46 @@ func NewSecretsScanner(cfg *SecretsConfig) *SecretsScanner {
 	return s
 }
 
-// ScanRequest checks outbound tool arguments for leaked secrets.
-func (s *SecretsScanner) ScanRequest(method string, decodedParams string) (bool, string) {
+// ScanRequestDetail checks outbound tool arguments for leaked secrets.
+// Returns a *types.ScanResult if a secret is detected, nil otherwise.
+func (s *SecretsScanner) ScanRequestDetail(method string, decodedParams string) *types.ScanResult {
 	if s == nil || !s.scanRequests {
-		return false, ""
+		return nil
 	}
 	if s.excludeTools[method] {
-		return false, ""
+		return nil
 	}
-	return s.scan(decodedParams)
+	return s.scanDetail(decodedParams)
+}
+
+// ScanRequest checks outbound tool arguments for leaked secrets.
+func (s *SecretsScanner) ScanRequest(method string, decodedParams string) (bool, string) {
+	result := s.ScanRequestDetail(method, decodedParams)
+	if result != nil {
+		return true, result.Description
+	}
+	return false, ""
+}
+
+// ScanResponseDetail checks inbound tool responses for leaked secrets.
+// Returns a *types.ScanResult if a secret is detected, nil otherwise.
+func (s *SecretsScanner) ScanResponseDetail(method string, responseBody string) *types.ScanResult {
+	if s == nil || !s.scanResponses {
+		return nil
+	}
+	if s.excludeTools[method] {
+		return nil
+	}
+	return s.scanDetail(responseBody)
 }
 
 // ScanResponse checks inbound tool responses for leaked secrets.
 func (s *SecretsScanner) ScanResponse(method string, responseBody string) (bool, string) {
-	if s == nil || !s.scanResponses {
-		return false, ""
+	result := s.ScanResponseDetail(method, responseBody)
+	if result != nil {
+		return true, result.Description
 	}
-	if s.excludeTools[method] {
-		return false, ""
-	}
-	return s.scan(responseBody)
+	return false, ""
 }
 
 // Action returns the configured action ("block" or "redact").
@@ -160,11 +182,28 @@ func (s *SecretsScanner) RuleCount() int {
 	return len(s.rules)
 }
 
-func (s *SecretsScanner) scan(text string) (bool, string) {
+func (s *SecretsScanner) scanDetail(text string) *types.ScanResult {
 	for _, rule := range s.rules {
 		if rule.pattern.MatchString(text) {
-			return true, fmt.Sprintf("secrets_scan: %s detected (%s)", rule.name, rule.description)
+			ruleID := toSnakeCase(rule.name)
+			return &types.ScanResult{
+				Scanner:      "secrets",
+				RuleID:       ruleID,
+				Description:  fmt.Sprintf("secrets_scan: %s detected (%s)", rule.name, rule.description),
+				MatchExcerpt: types.RedactExcerpt(rule.name),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
+	}
+	return nil
+}
+
+func (s *SecretsScanner) scan(text string) (bool, string) {
+	result := s.scanDetail(text)
+	if result != nil {
+		return true, result.Description
 	}
 	return false, ""
 }
@@ -497,4 +536,9 @@ func (s *SecretsScanner) RedactSecrets(text string) (string, []string) {
 	}
 
 	return result, redacted
+}
+
+// toSnakeCase converts a string to snake_case by lowercasing and replacing spaces with underscores.
+func toSnakeCase(s string) string {
+	return strings.ReplaceAll(strings.ToLower(s), " ", "_")
 }

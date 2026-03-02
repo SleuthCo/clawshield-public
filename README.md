@@ -142,11 +142,12 @@ Key metrics:
 
 The core of ClawShield. An HTTP reverse proxy that intercepts all traffic between users and the AI gateway.
 
-**Scanners:**
+**Scanners** (each produces structured forensic audit records with rule IDs and redacted match excerpts):
 - **Prompt injection detection** — blocks jailbreak attempts, instruction override, role manipulation
 - **PII redaction** — detects and redacts emails, phone numbers, SSNs, credit cards
 - **Secrets detection** — catches API keys, tokens, passwords before they leak
-- **Vulnerability scanning** — flags known-dangerous tool calls and arguments
+- **Vulnerability scanning** — flags SQL injection, SSRF, path traversal, command injection, XSS
+- **Malware analysis** — detects executables, scripts, archive bombs, known signatures
 
 **Policy engine** — YAML-based, deny-by-default:
 ```yaml
@@ -187,13 +188,18 @@ Each agent has a specialized role and its own RAG knowledge base:
 Every request and response is logged to a local SQLite database with:
 - Timestamp, source IP, request method
 - Scanner decisions (allow/block/redact) with reasons
+- **Decision explainability** — structured forensic detail for every deny/redact decision, including which scanner fired, which rule matched, a safely redacted excerpt of the match, and confidence level
 - Full request/response payloads (configurable)
 - Query via the built-in audit CLI:
 
 ```bash
 clawshield-audit --db /var/lib/clawshield/audit.db --last 50
 clawshield-audit --db /var/lib/clawshield/audit.db --blocked-only
+clawshield-audit --db /var/lib/clawshield/audit.db --scanner injection
+clawshield-audit --db /var/lib/clawshield/audit.db --rule-id sqli
 ```
+
+See [docs/audit-log-format.md](docs/audit-log-format.md) for the full schema and [Decision Explainability](docs/audit-log-format.md#decision-explainability) for forensic query details.
 
 ### Network Firewall (optional)
 

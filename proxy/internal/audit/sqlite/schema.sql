@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     classification TEXT,
     source TEXT,
     response_blocked INTEGER DEFAULT 0,
+    decision_details JSON,
     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );
 
@@ -51,6 +52,7 @@ CREATE INDEX IF NOT EXISTS idx_decisions_tool ON decisions(tool);
 CREATE INDEX IF NOT EXISTS idx_decisions_decision ON decisions(decision);
 CREATE INDEX IF NOT EXISTS idx_decisions_arguments_hash ON decisions(arguments_hash);
 CREATE INDEX IF NOT EXISTS idx_decisions_correlation ON decisions(correlation_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_scanner_type ON decisions(scanner_type);
 CREATE INDEX IF NOT EXISTS idx_policy_changes_timestamp ON policy_changes(timestamp);
 CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
 

@@ -138,10 +138,16 @@ const (
 	Deny  = "deny"
 )
 
-// EvaluateWithContext evaluates with context cancellation and timeout support.
-// If the policy defines evaluation_timeout_ms, the evaluator enforces that timeout
-// internally, regardless of whether the caller provides a deadline.
-func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (string, string) {
+// EvaluateWithDetails evaluates a message and returns detailed forensic information
+// about the decision, enabling explainability for allow/deny/redact decisions.
+// Returns (decision, reason, *DecisionDetail).
+func (e *Evaluator) EvaluateWithDetails(ctx context.Context, message string) (string, string, *types.DecisionDetail) {
+	startTime := time.Now()
+	detail := &types.DecisionDetail{
+		ScanResults:     []types.ScanResult{},
+		ActiveOverrides: []string{},
+	}
+
 	if e.policy.EvaluationTimeoutMs > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(e.policy.EvaluationTimeoutMs)*time.Millisecond)
@@ -150,13 +156,17 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 
 	select {
 	case <-ctx.Done():
-		return Deny, "evaluation timeout exceeded"
+		detail.PipelineStage = "timeout"
+		detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+		return Deny, "evaluation timeout exceeded", detail
 	default:
 	}
 
 	// Reject messages with duplicate JSON keys (parser differential attack)
 	if hasDuplicateKeys([]byte(message)) {
-		return Deny, "duplicate JSON keys detected"
+		detail.PipelineStage = "duplicate_keys"
+		detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+		return Deny, "duplicate JSON keys detected", detail
 	}
 
 	var rpc struct {
@@ -165,21 +175,30 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 	}
 
 	if err := json.Unmarshal([]byte(message), &rpc); err != nil {
-		return Deny, "invalid JSON-RPC format: " + err.Error()
+		detail.PipelineStage = "parse_error"
+		detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+		return Deny, "invalid JSON-RPC format: " + err.Error(), detail
 	}
 
 	if rpc.Method == "" {
-		return Deny, "missing method field in JSON-RPC"
+		detail.PipelineStage = "parse_error"
+		detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+		return Deny, "missing method field in JSON-RPC", detail
 	}
 
 	if !json.Valid(rpc.Params) {
-		return Deny, "invalid params JSON in JSON-RPC"
+		detail.PipelineStage = "parse_error"
+		detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+		return Deny, "invalid params JSON in JSON-RPC", detail
 	}
 
 	// Check denylist first (highest priority)
 	for _, deniedTool := range e.policy.Denylist {
 		if rpc.Method == deniedTool {
-			return Deny, "tool explicitly denied by denylist"
+			detail.PipelineStage = "denylist"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			e.recordActiveOverrides(detail)
+			return Deny, "tool explicitly denied by denylist", detail
 		}
 	}
 
@@ -194,7 +213,10 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 			}
 		}
 		if !inAllowlist {
-			return Deny, "tool not in allowlist"
+			detail.PipelineStage = "allowlist"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			e.recordActiveOverrides(detail)
+			return Deny, "tool not in allowlist", detail
 		}
 	}
 
@@ -203,13 +225,18 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 	if compiledRe, exists := e.argFilterRegex[rpc.Method]; exists {
 		select {
 		case <-ctx.Done():
-			return Deny, "evaluation timeout exceeded"
+			detail.PipelineStage = "timeout"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			return Deny, "evaluation timeout exceeded", detail
 		default:
 		}
-		// Decode params to canonical string form to defeat \uXXXX escapes
+		// Decode params to canonical string form to defeat \\uXXXX escapes
 		decoded := decodeJSONStrings(rpc.Params)
 		if compiledRe.MatchString(decoded) {
-			return Deny, "sensitive data detected in arguments"
+			detail.PipelineStage = "arg_filter"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			e.recordActiveOverrides(detail)
+			return Deny, "sensitive data detected in arguments", detail
 		}
 	}
 
@@ -217,7 +244,9 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 	if strings.HasPrefix(rpc.Method, "web.") && len(e.policy.DomainAllowlist) > 0 {
 		select {
 		case <-ctx.Done():
-			return Deny, "evaluation timeout exceeded"
+			detail.PipelineStage = "timeout"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			return Deny, "evaluation timeout exceeded", detail
 		default:
 		}
 
@@ -225,24 +254,35 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 			URL string `json:"url"`
 		}
 		if err := json.Unmarshal(rpc.Params, &params); err != nil || params.URL == "" {
-			return Deny, "cannot extract URL from web request for domain validation"
+			detail.PipelineStage = "domain_allowlist"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			e.recordActiveOverrides(detail)
+			return Deny, "cannot extract URL from web request for domain validation", detail
 		}
 
 		// Reject URLs with suspicious characters that cause parser differentials
 		if err := validateURLSafety(params.URL); err != nil {
-			return Deny, "unsafe URL rejected: " + err.Error()
+			detail.PipelineStage = "domain_allowlist"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			e.recordActiveOverrides(detail)
+			return Deny, "unsafe URL rejected: " + err.Error(), detail
 		}
 
 		domain := extractDomain(params.URL)
 		if domain == "" {
-			return Deny, "cannot parse domain from URL"
+			detail.PipelineStage = "domain_allowlist"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			e.recordActiveOverrides(detail)
+			return Deny, "cannot parse domain from URL", detail
 		}
 
 		allowed := false
 		for _, allowedDomain := range e.policy.DomainAllowlist {
 			select {
 			case <-ctx.Done():
-				return Deny, "evaluation timeout exceeded"
+				detail.PipelineStage = "timeout"
+				detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+				return Deny, "evaluation timeout exceeded", detail
 			default:
 			}
 			if matchDomain(domain, allowedDomain) {
@@ -251,7 +291,10 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 			}
 		}
 		if !allowed {
-			return Deny, "domain not in allowlist"
+			detail.PipelineStage = "domain_allowlist"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			e.recordActiveOverrides(detail)
+			return Deny, "domain not in allowlist", detail
 		}
 	}
 
@@ -259,12 +302,18 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 	if e.vulnScanner != nil {
 		select {
 		case <-ctx.Done():
-			return Deny, "evaluation timeout exceeded"
+			detail.PipelineStage = "timeout"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			return Deny, "evaluation timeout exceeded", detail
 		default:
 		}
 		decoded := decodeJSONStrings(rpc.Params)
-		if blocked, reason := e.vulnScanner.Scan(rpc.Method, decoded); blocked {
-			return Deny, reason
+		if scanResult := e.vulnScanner.ScanDetail(rpc.Method, decoded); scanResult != nil {
+			detail.PipelineStage = "vuln_scan"
+			detail.ScanResults = append(detail.ScanResults, *scanResult)
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			e.recordActiveOverrides(detail)
+			return Deny, scanResult.Description, detail
 		}
 	}
 
@@ -272,12 +321,18 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 	if e.injectionDetector != nil {
 		select {
 		case <-ctx.Done():
-			return Deny, "evaluation timeout exceeded"
+			detail.PipelineStage = "timeout"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			return Deny, "evaluation timeout exceeded", detail
 		default:
 		}
 		decoded := decodeJSONStrings(rpc.Params)
-		if blocked, reason := e.injectionDetector.ScanRequest(rpc.Method, decoded); blocked {
-			return Deny, reason
+		if scanResult := e.injectionDetector.ScanRequestDetail(rpc.Method, decoded); scanResult != nil {
+			detail.PipelineStage = "injection_scan"
+			detail.ScanResults = append(detail.ScanResults, *scanResult)
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			e.recordActiveOverrides(detail)
+			return Deny, scanResult.Description, detail
 		}
 	}
 
@@ -285,12 +340,18 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 	if e.secretsScanner != nil {
 		select {
 		case <-ctx.Done():
-			return Deny, "evaluation timeout exceeded"
+			detail.PipelineStage = "timeout"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			return Deny, "evaluation timeout exceeded", detail
 		default:
 		}
 		decoded := decodeJSONStrings(rpc.Params)
-		if blocked, reason := e.secretsScanner.ScanRequest(rpc.Method, decoded); blocked {
-			return Deny, reason
+		if scanResult := e.secretsScanner.ScanRequestDetail(rpc.Method, decoded); scanResult != nil {
+			detail.PipelineStage = "secrets_scan"
+			detail.ScanResults = append(detail.ScanResults, *scanResult)
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			e.recordActiveOverrides(detail)
+			return Deny, scanResult.Description, detail
 		}
 	}
 
@@ -298,34 +359,69 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 	if e.piiScanner != nil {
 		select {
 		case <-ctx.Done():
-			return Deny, "evaluation timeout exceeded"
+			detail.PipelineStage = "timeout"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			return Deny, "evaluation timeout exceeded", detail
 		default:
 		}
 		decoded := decodeJSONStrings(rpc.Params)
-		if blocked, reason := e.piiScanner.ScanRequest(rpc.Method, decoded); blocked {
-			return Deny, reason
+		if scanResult := e.piiScanner.ScanRequestDetail(rpc.Method, decoded); scanResult != nil {
+			detail.PipelineStage = "pii_scan"
+			detail.ScanResults = append(detail.ScanResults, *scanResult)
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			e.recordActiveOverrides(detail)
+			return Deny, scanResult.Description, detail
 		}
 	}
 
 	// If method was explicitly in the allowlist and passed all security scans, allow it
 	if inAllowlist {
-		return Allow, "tool in allowlist, scans passed"
+		detail.PipelineStage = "allowlist"
+		detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+		e.recordActiveOverrides(detail)
+		return Allow, "tool in allowlist, scans passed", detail
 	}
 
 	effectiveDefault := e.effectiveDefaultAction()
+	detail.PipelineStage = "default_action"
+	detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+	e.recordActiveOverrides(detail)
 	if effectiveDefault == Allow {
-		return Allow, "default allowed"
+		return Allow, "default allowed", detail
 	}
-	return Deny, "default denied"
+	return Deny, "default denied", detail
+}
+
+// recordActiveOverrides records any adaptive overrides that are currently active.
+func (e *Evaluator) recordActiveOverrides(detail *types.DecisionDetail) {
+	e.overrideMu.RLock()
+	defer e.overrideMu.RUnlock()
+
+	now := time.Now()
+	if e.sensitivityOverride != "" && now.Before(e.sensitivityOverrideExp) {
+		detail.ActiveOverrides = append(detail.ActiveOverrides, "sensitivity_override:"+e.sensitivityOverride)
+	}
+	if e.defaultActionOverride != "" && now.Before(e.defaultActionOverrideExp) {
+		detail.ActiveOverrides = append(detail.ActiveOverrides, "default_action_override:"+e.defaultActionOverride)
+	}
+}
+
+// EvaluateWithContext evaluates with context cancellation and timeout support.
+// If the policy defines evaluation_timeout_ms, the evaluator enforces that timeout
+// internally, regardless of whether the caller provides a deadline.
+func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (string, string) {
+	decision, reason, _ := e.EvaluateWithDetails(ctx, message)
+	return decision, reason
 }
 
 // ResponseResult holds the result of a response evaluation, including
 // any redacted content when scanners are configured in "redact" mode.
 type ResponseResult struct {
-	Decision     string // "allow" or "deny"
-	Reason       string // Human-readable explanation
-	RedactedBody string // Modified response body (empty if no redaction applied)
-	WasRedacted  bool   // True if the response body was modified by redaction
+	Decision     string               // "allow" or "deny"
+	Reason       string               // Human-readable explanation
+	RedactedBody string               // Modified response body (empty if no redaction applied)
+	WasRedacted  bool                 // True if the response body was modified by redaction
+	Details      *types.DecisionDetail // NEW: Structured forensic detail for explainability
 }
 
 // EvaluateResponse scans an MCP server response for malicious content.
@@ -335,23 +431,45 @@ type ResponseResult struct {
 // Scanners with action="block" will deny the response entirely.
 // Scanners with action="redact" will sanitize the response and allow it through.
 func (e *Evaluator) EvaluateResponse(ctx context.Context, method string, responseBody string) ResponseResult {
+	startTime := time.Now()
+	detail := &types.DecisionDetail{
+		ScanResults:     []types.ScanResult{},
+		ActiveOverrides: []string{},
+	}
+
 	select {
 	case <-ctx.Done():
-		return ResponseResult{Decision: Deny, Reason: "evaluation timeout exceeded"}
+		detail.PipelineStage = "timeout"
+		detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+		return ResponseResult{Decision: Deny, Reason: "evaluation timeout exceeded", Details: detail}
 	default:
 	}
 
 	// Prompt injection response scanning — always blocks (no redact mode)
 	if e.injectionDetector != nil {
 		if blocked, reason := e.injectionDetector.ScanResponse(method, responseBody); blocked {
-			return ResponseResult{Decision: Deny, Reason: reason}
+			detail.PipelineStage = "injection_scan"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			// Try to collect detailed scan result if available
+			if scanResult := e.injectionDetector.ScanResponseDetail(method, responseBody); scanResult != nil {
+				detail.ScanResults = append(detail.ScanResults, *scanResult)
+			}
+			e.recordActiveOverrides(detail)
+			return ResponseResult{Decision: Deny, Reason: reason, Details: detail}
 		}
 	}
 
 	// Malware scanning — always blocks
 	if e.malwareScanner != nil {
 		if blocked, reason := e.malwareScanner.ScanResponse(responseBody); blocked {
-			return ResponseResult{Decision: Deny, Reason: reason}
+			detail.PipelineStage = "malware_scan"
+			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+			// Try to collect detailed scan result if available
+			if scanResult := e.malwareScanner.ScanResponseDetail(responseBody); scanResult != nil {
+				detail.ScanResults = append(detail.ScanResults, *scanResult)
+			}
+			e.recordActiveOverrides(detail)
+			return ResponseResult{Decision: Deny, Reason: reason, Details: detail}
 		}
 	}
 
@@ -359,10 +477,16 @@ func (e *Evaluator) EvaluateResponse(ctx context.Context, method string, respons
 	workingBody := responseBody
 	wasRedacted := false
 	var redactReasons []string
+	var scanResults []types.ScanResult
 
 	// Secrets scanning on responses
 	if e.secretsScanner != nil {
 		if detected, reason := e.secretsScanner.ScanResponse(method, workingBody); detected {
+			// Collect detailed scan result if available
+			if scanResult := e.secretsScanner.ScanResponseDetail(method, workingBody); scanResult != nil {
+				scanResults = append(scanResults, *scanResult)
+			}
+
 			if e.secretsScanner.Action() == "redact" {
 				redacted, found := e.secretsScanner.RedactSecrets(workingBody)
 				if len(found) > 0 {
@@ -371,7 +495,11 @@ func (e *Evaluator) EvaluateResponse(ctx context.Context, method string, respons
 					redactReasons = append(redactReasons, fmt.Sprintf("secrets redacted: %v", found))
 				}
 			} else {
-				return ResponseResult{Decision: Deny, Reason: reason}
+				detail.PipelineStage = "secrets_scan"
+				detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+				detail.ScanResults = scanResults
+				e.recordActiveOverrides(detail)
+				return ResponseResult{Decision: Deny, Reason: reason, Details: detail}
 			}
 		}
 	}
@@ -379,6 +507,11 @@ func (e *Evaluator) EvaluateResponse(ctx context.Context, method string, respons
 	// PII scanning on responses
 	if e.piiScanner != nil {
 		if detected, reason := e.piiScanner.ScanResponse(method, workingBody); detected {
+			// Collect detailed scan result if available
+			if scanResult := e.piiScanner.ScanResponseDetail(method, workingBody); scanResult != nil {
+				scanResults = append(scanResults, *scanResult)
+			}
+
 			if e.piiScanner.Action() == "redact" {
 				redacted, found := e.piiScanner.RedactPII(workingBody)
 				if len(found) > 0 {
@@ -387,22 +520,34 @@ func (e *Evaluator) EvaluateResponse(ctx context.Context, method string, respons
 					redactReasons = append(redactReasons, fmt.Sprintf("PII redacted: %v", found))
 				}
 			} else {
-				return ResponseResult{Decision: Deny, Reason: reason}
+				detail.PipelineStage = "pii_scan"
+				detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+				detail.ScanResults = scanResults
+				e.recordActiveOverrides(detail)
+				return ResponseResult{Decision: Deny, Reason: reason, Details: detail}
 			}
 		}
 	}
 
 	if wasRedacted {
 		reason := strings.Join(redactReasons, "; ")
+		detail.PipelineStage = "response_redaction"
+		detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+		detail.ScanResults = scanResults
+		e.recordActiveOverrides(detail)
 		return ResponseResult{
 			Decision:     Allow,
 			Reason:       "response redacted: " + reason,
 			RedactedBody: workingBody,
 			WasRedacted:  true,
+			Details:      detail,
 		}
 	}
 
-	return ResponseResult{Decision: Allow, Reason: "response clean"}
+	detail.PipelineStage = "response_clean"
+	detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
+	e.recordActiveOverrides(detail)
+	return ResponseResult{Decision: Allow, Reason: "response clean", Details: detail}
 }
 
 // EvaluateResponseSimple is a backward-compatible wrapper that returns only

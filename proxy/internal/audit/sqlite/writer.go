@@ -195,8 +195,8 @@ func (w *Writer) flushBatch() error {
 	defer tx.Rollback() // nolint:errcheck
 
 	decStmt, err := tx.PrepareContext(context.Background(), `
-	INSERT INTO decisions (timestamp, session_id, tool, arguments_hash, decision, reason, policy_version, scanner_type, correlation_id, classification, source, response_blocked)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	INSERT INTO decisions (timestamp, session_id, tool, arguments_hash, decision, reason, policy_version, scanner_type, correlation_id, classification, source, response_blocked, decision_details)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare decision insert: %w", err)
 	}
@@ -217,6 +217,15 @@ func (w *Writer) flushBatch() error {
 		if dec.ResponseBlocked {
 			respBlocked = 1
 		}
+		// Serialize decision details
+		detailsJSON, err := types.MarshalDecisionDetail(dec.Details)
+		if err != nil {
+			return fmt.Errorf("marshal decision details: %w", err)
+		}
+		var detailsBytes []byte
+		if detailsJSON != nil {
+			detailsBytes = []byte(detailsJSON)
+		}
 		result, err := decStmt.ExecContext(context.Background(),
 			dec.Timestamp,
 			dec.SessionID,
@@ -229,7 +238,8 @@ func (w *Writer) flushBatch() error {
 			dec.CorrelationID,
 			dec.Classification,
 			dec.Source,
-			respBlocked)
+			respBlocked,
+			detailsBytes)
 		if err != nil {
 			return fmt.Errorf("insert decision: %w", err)
 		}
