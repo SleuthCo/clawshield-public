@@ -110,6 +110,72 @@ Destination for audit log output:
 5. For matching selectors, apply redaction per `redact_patterns`
 6. Log decision to audit output based on `audit` settings
 
+### `pii_scan`
+
+Detects Personally Identifiable Information (PII) in tool arguments and responses by matching value patterns — email addresses, phone numbers, SSNs, credit card numbers, IP addresses, and more.
+
+#### `enabled` (boolean)
+
+Enable or disable PII scanning.
+
+#### `scan_requests` (boolean)
+
+Scan outbound tool arguments for PII.
+
+#### `scan_responses` (boolean)
+
+Scan inbound tool responses for PII.
+
+#### `action` (string)
+
+What to do when PII is detected:
+- `redact` (default): Replace detected PII with category-specific placeholders (e.g., `[EMAIL_REDACTED]`) and allow the message through
+- `block`: Deny the request/response entirely
+
+#### `rules` (array of strings)
+
+Which PII categories to detect. Empty = all categories. Available categories:
+
+| Category | Detects | Confidence |
+|----------|---------|------------|
+| `email` | Email addresses | High |
+| `phone` | US and international phone numbers | Medium |
+| `ssn` | US Social Security Numbers (with validation) | High |
+| `credit_card` | Visa, Mastercard, Amex, Discover (with Luhn check) | High |
+| `ip_address` | Public IPv4 addresses (excludes private/loopback) | Low |
+| `passport` | Passport number references | Medium |
+| `date_of_birth` | Dates of birth with contextual keywords | High |
+| `postal_address` | US street addresses and ZIP codes | Medium |
+| `iban` | International Bank Account Numbers | High |
+| `drivers_license` | Driver's license number references | Medium |
+
+#### `exclude_tools` (array of strings)
+
+Tools exempt from PII scanning (e.g., `crm.lookup`, `user.profile`).
+
+#### `min_confidence` (string)
+
+Minimum confidence level for PII detection: `low`, `medium` (default), `high`. Higher confidence reduces false positives but may miss some PII.
+
+**Example:**
+
+```yaml
+pii_scan:
+  enabled: true
+  scan_requests: true
+  scan_responses: true
+  action: redact
+  rules:
+    - email
+    - phone
+    - ssn
+    - credit_card
+  min_confidence: medium
+  exclude_tools:
+    - crm.lookup
+    - user.profile
+```
+
 ### `secrets_scan`
 
 Detects leaked credentials and secrets in tool arguments and responses by matching value patterns — AWS access keys, GitHub tokens, Stripe keys, JWTs, private keys, database connection strings, and more.
