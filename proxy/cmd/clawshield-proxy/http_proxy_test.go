@@ -15,6 +15,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/SleuthCo/clawshield/proxy/internal/engine"
+	"github.com/SleuthCo/clawshield/proxy/internal/metrics"
 	"github.com/SleuthCo/clawshield/proxy/internal/scanner"
 )
 
@@ -229,6 +230,7 @@ func TestHTTPProxy_PlainHTTPForwarding(t *testing.T) {
 	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
 
 	p := &httpProxy{
+		metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
 		evaluator:  eval,
 		sessionID:  "test-session",
@@ -269,6 +271,7 @@ func TestHTTPProxy_AuthTokenInjection(t *testing.T) {
 	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
 
 	p := &httpProxy{
+		metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
 		authToken:  "test-secret-token",
 		evaluator:  eval,
@@ -315,6 +318,7 @@ func TestHTTPProxy_WebSocketPolicyEnforcement(t *testing.T) {
 	})
 
 	p := &httpProxy{
+		metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
 		evaluator:  eval,
 		sessionID:  "test-session",
@@ -396,6 +400,7 @@ func TestHTTPProxy_WebSocketVulnScan(t *testing.T) {
 	})
 
 	p := &httpProxy{
+		metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
 		evaluator:  eval,
 		sessionID:  "test-session",
@@ -462,6 +467,7 @@ func TestHTTPProxy_AgentAllowlistEnforcement(t *testing.T) {
 	})
 
 	p := &httpProxy{
+		metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
 		evaluator:  eval,
 		sessionID:  "test-session",

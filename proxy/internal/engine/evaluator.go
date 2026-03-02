@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SleuthCo/clawshield/proxy/internal/scanner"
@@ -63,6 +64,14 @@ type Evaluator struct {
 	malwareScanner     *scanner.MalwareScanner
 	secretsScanner     *scanner.SecretsScanner
 	piiScanner         *scanner.PIIScanner
+
+	// Cross-layer adaptive override fields — allow temporary policy changes
+	// in response to detected threats (e.g. elevate sensitivity when under attack).
+	overrideMu             sync.RWMutex
+	sensitivityOverride    string
+	sensitivityOverrideExp time.Time
+	defaultActionOverride    string
+	defaultActionOverrideExp time.Time
 }
 
 func NewEvaluator(policy *Policy) *Evaluator {

@@ -29,6 +29,7 @@ import (
 	"github.com/SleuthCo/clawshield/proxy/internal/audit/sqlite"
 	"github.com/SleuthCo/clawshield/proxy/internal/engine"
 	"github.com/SleuthCo/clawshield/proxy/internal/metrics"
+	"github.com/SleuthCo/clawshield/shared/bus"
 	"github.com/SleuthCo/clawshield/shared/types"
 )
 
