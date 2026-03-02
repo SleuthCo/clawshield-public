@@ -196,4 +196,98 @@ Integrity checkpoints are retained indefinitely to detect tampering.
 
 ## SIEM Integration
 
-Export logs as JSON for ingestion into SIEM tools (e.g., Splunk, ELK). Use `clawshield-audit --format json` for full structured output.
+ClawShield can forward security events to enterprise SIEM systems (Splunk, Sentinel, Elastic, QRadar, etc.) in real-time using the [OCSF v1.1](https://schema.ocsf.io/) Detection Finding format.
+
+### Configuration
+
+Add a `siem:` block to your `policy.yaml`:
+
+**Webhook transport (recommended):**
+```yaml
+siem:
+  enabled: true
+  transport: webhook
+  webhook_url: "https://siem.company.com/api/events"
+  webhook_auth_header: "Bearer YOUR_SIEM_TOKEN"
+  webhook_timeout_ms: 5000
+  min_severity: 4  # 4=High, 5=Critical (default: 4)
+  queue_size: 10000
+```
+
+**Syslog transport (RFC 5424 over TCP/TLS):**
+```yaml
+siem:
+  enabled: true
+  transport: syslog
+  syslog_address: "siem.company.com:6514"
+  syslog_tls: true
+  syslog_cert_file: "/etc/clawshield/siem-client.crt"  # optional, for mTLS
+  syslog_key_file: "/etc/clawshield/siem-client.key"   # optional, for mTLS
+  min_severity: 4
+```
+
+### Severity Mapping
+
+| OCSF Severity | ID | ClawShield Triggers |
+|---------------|----|-----------|
+| Critical | 5 | Prompt injection blocked, malware detected |
+| High | 4 | SQL injection, SSRF, secrets detected, policy deny |
+| Medium | 3 | PII detected, response redacted |
+| Informational | 1 | Allowed requests (not forwarded by default) |
+
+Set `min_severity` to control the threshold. Default is `4` (High), meaning only High and Critical events are forwarded.
+
+### OCSF Event Format
+
+Events use OCSF class `Detection Finding` (class_uid: 2004):
+
+```json
+{
+  "metadata": {
+    "version": "1.1.0",
+    "product": {"name": "ClawShield", "vendor_name": "SleuthCo", "version": "1.0.0"},
+    "logged_time": 1709529600000,
+    "correlation_uid": "session-abc123",
+    "event_code": "detection_finding"
+  },
+  "time": 1709529600000,
+  "severity_id": 5,
+  "severity": "Critical",
+  "class_uid": 2004,
+  "category_uid": 2,
+  "type_uid": 200401,
+  "activity_id": 1,
+  "status_id": 3,
+  "status": "Blocked",
+  "message": "ClawShield deny: prompt_injection: role override attempt detected [tool=chat.send]",
+  "finding_info": {
+    "title": "prompt_injection: role override attempt detected",
+    "uid": "role_override",
+    "types": ["injection", "role_override"],
+    "confidence": "high",
+    "severity": "Critical"
+  },
+  "evidences": [
+    {"name": "rule_id", "value": "role_override"},
+    {"name": "scanner", "value": "injection"},
+    {"name": "confidence", "value": "high"},
+    {"name": "match_excerpt", "value": "ignore previous instruc..."}
+  ],
+  "resources": [
+    {"type": "tool", "name": "chat.send"},
+    {"type": "agent", "name": "assistant-v2"}
+  ],
+  "unmapped": {
+    "pipeline_stage": "injection_scan",
+    "eval_duration_ms": 0.85
+  }
+}
+```
+
+### Security Notes
+
+- **HTTPS required** for webhook transport — HTTP URLs are rejected at config validation
+- **TLS 1.2 minimum** for syslog transport — older protocols are not supported
+- **Credentials** (`webhook_auth_header`) are never logged by ClawShield
+- **Match excerpts** in OCSF events use the same redaction as audit logs — secrets show `AKIA****LE`, PII shows `****`
+- **Queue bounded** at 10,000 events (configurable) — events are dropped (not blocked) if SIEM is unreachable

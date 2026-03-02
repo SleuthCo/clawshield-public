@@ -23,6 +23,7 @@ import (
 	"github.com/SleuthCo/clawshield/proxy/internal/audit/sqlite"
 	"github.com/SleuthCo/clawshield/proxy/internal/config"
 	"github.com/SleuthCo/clawshield/proxy/internal/engine"
+	"github.com/SleuthCo/clawshield/proxy/internal/siem"
 	"github.com/SleuthCo/clawshield/shared/bus"
 	"github.com/SleuthCo/clawshield/shared/types"
 )
@@ -84,6 +85,30 @@ func main() {
 	}
 	if auditWriter != nil {
 		defer auditWriter.Close()
+	}
+
+	// Initialize SIEM forwarder if configured
+	if cfg.SIEM != nil && cfg.SIEM.Enabled && auditWriter != nil {
+		siemCfg := &siem.SIEMConfig{
+			Enabled:           cfg.SIEM.Enabled,
+			MinSeverity:       cfg.SIEM.MinSeverity,
+			Transport:         cfg.SIEM.Transport,
+			SyslogAddress:     cfg.SIEM.SyslogAddress,
+			SyslogTLS:         cfg.SIEM.SyslogTLS,
+			SyslogCertFile:    cfg.SIEM.SyslogCertFile,
+			SyslogKeyFile:     cfg.SIEM.SyslogKeyFile,
+			WebhookURL:        cfg.SIEM.WebhookURL,
+			WebhookAuthHeader: cfg.SIEM.WebhookAuthHeader,
+			WebhookTimeoutMs:  cfg.SIEM.WebhookTimeoutMs,
+			QueueSize:         cfg.SIEM.QueueSize,
+		}
+		forwarder, err := siem.NewForwarderFromConfig(siemCfg)
+		if err != nil {
+			log.Fatalf("Failed to initialize SIEM forwarder: %v", err)
+		}
+		auditWriter.SetSIEMForwarder(forwarder)
+		defer forwarder.Close()
+		log.Printf("SIEM forwarder enabled: transport=%s min_severity=%d", cfg.SIEM.Transport, cfg.SIEM.MinSeverity)
 	}
 
 	// Generate cryptographically random session ID
