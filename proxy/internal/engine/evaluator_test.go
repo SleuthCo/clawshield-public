@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/SleuthCo/clawshield/proxy/internal/scanner"
 )
 
 func TestNewEvaluator(t *testing.T) {
@@ -375,6 +377,212 @@ func TestEvaluateWithContext_TimeoutDuringDomainCheck(t *testing.T) {
 
 	if !contains(reason, "timeout exceeded") {
 		t.Errorf("got reason %q, want to contain 'timeout exceeded'", reason)
+	}
+}
+
+func TestEvaluateResponse_RedactSecrets(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+		SecretsScan: &scanner.SecretsConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	// Build GitHub token at runtime to avoid GitHub push protection
+	ghToken := "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+	response := `{"result": "Token is ` + ghToken + `"}`
+
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", response)
+
+	if result.Decision != Allow {
+		t.Errorf("expected Allow with redaction, got %s (reason: %s)", result.Decision, result.Reason)
+	}
+	if !result.WasRedacted {
+		t.Error("expected WasRedacted to be true")
+	}
+	if result.RedactedBody == response {
+		t.Error("expected redacted body to differ from original")
+	}
+	if contains(result.RedactedBody, ghToken) {
+		t.Error("expected secret to be redacted from body")
+	}
+	if !contains(result.Reason, "secrets redacted") {
+		t.Errorf("expected reason to mention secrets redacted, got: %s", result.Reason)
+	}
+	t.Logf("Redacted body: %s", result.RedactedBody)
+	t.Logf("Reason: %s", result.Reason)
+}
+
+func TestEvaluateResponse_BlockSecrets(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+		SecretsScan: &scanner.SecretsConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "block", // Block instead of redact
+		},
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	ghToken := "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+	response := `{"result": "Token is ` + ghToken + `"}`
+
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", response)
+
+	if result.Decision != Deny {
+		t.Errorf("expected Deny when action is block, got %s", result.Decision)
+	}
+	if result.WasRedacted {
+		t.Error("expected WasRedacted to be false when blocking")
+	}
+}
+
+func TestEvaluateResponse_RedactPII(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+		PIIScan: &scanner.PIIConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	response := `{"result": "Contact user@example.com for details, SSN: 123-45-6789"}`
+
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", response)
+
+	if result.Decision != Allow {
+		t.Errorf("expected Allow with redaction, got %s (reason: %s)", result.Decision, result.Reason)
+	}
+	if !result.WasRedacted {
+		t.Error("expected WasRedacted to be true")
+	}
+	if contains(result.RedactedBody, "user@example.com") {
+		t.Error("expected email to be redacted from body")
+	}
+	if !contains(result.Reason, "PII redacted") {
+		t.Errorf("expected reason to mention PII redacted, got: %s", result.Reason)
+	}
+	t.Logf("Redacted body: %s", result.RedactedBody)
+}
+
+func TestEvaluateResponse_BlockPII(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+		PIIScan: &scanner.PIIConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "block",
+		},
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	response := `{"result": "Email is user@example.com"}`
+
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", response)
+
+	if result.Decision != Deny {
+		t.Errorf("expected Deny when PII action is block, got %s", result.Decision)
+	}
+}
+
+func TestEvaluateResponse_CleanResponse(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+		SecretsScan: &scanner.SecretsConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
+		PIIScan: &scanner.PIIConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", `{"result": "All good, no secrets here"}`)
+
+	if result.Decision != Allow {
+		t.Errorf("expected Allow for clean response, got %s", result.Decision)
+	}
+	if result.WasRedacted {
+		t.Error("expected WasRedacted to be false for clean response")
+	}
+	if result.RedactedBody != "" {
+		t.Error("expected empty RedactedBody for clean response")
+	}
+	if result.Reason != "response clean" {
+		t.Errorf("expected reason 'response clean', got: %s", result.Reason)
+	}
+}
+
+func TestEvaluateResponse_BothRedactionsApplied(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+		SecretsScan: &scanner.SecretsConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
+		PIIScan: &scanner.PIIConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	ghToken := "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+	response := `{"result": "Token: ` + ghToken + `, Email: user@example.com"}`
+
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", response)
+
+	if result.Decision != Allow {
+		t.Errorf("expected Allow with dual redaction, got %s", result.Decision)
+	}
+	if !result.WasRedacted {
+		t.Error("expected WasRedacted to be true")
+	}
+	if contains(result.RedactedBody, ghToken) {
+		t.Error("expected secret to be redacted")
+	}
+	if contains(result.RedactedBody, "user@example.com") {
+		t.Error("expected email to be redacted")
+	}
+	if !contains(result.Reason, "secrets redacted") {
+		t.Errorf("expected reason to mention secrets, got: %s", result.Reason)
+	}
+	if !contains(result.Reason, "PII redacted") {
+		t.Errorf("expected reason to mention PII, got: %s", result.Reason)
+	}
+	t.Logf("Dual redacted body: %s", result.RedactedBody)
+}
+
+func TestEvaluateResponseSimple_BackwardCompat(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	decision, reason := evaluator.EvaluateResponseSimple(context.Background(), "chat.send", "clean response")
+	if decision != Allow {
+		t.Errorf("expected Allow, got %s", decision)
+	}
+	if reason != "response clean" {
+		t.Errorf("expected 'response clean', got %s", reason)
 	}
 }
 

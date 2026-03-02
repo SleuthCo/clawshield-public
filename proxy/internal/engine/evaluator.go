@@ -295,44 +295,97 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 	return Deny, "default denied"
 }
 
+// ResponseResult holds the result of a response evaluation, including
+// any redacted content when scanners are configured in "redact" mode.
+type ResponseResult struct {
+	Decision     string // "allow" or "deny"
+	Reason       string // Human-readable explanation
+	RedactedBody string // Modified response body (empty if no redaction applied)
+	WasRedacted  bool   // True if the response body was modified by redaction
+}
+
 // EvaluateResponse scans an MCP server response for malicious content.
-// Returns (decision, reason) where decision is "allow" or "deny".
-func (e *Evaluator) EvaluateResponse(ctx context.Context, method string, responseBody string) (string, string) {
+// Returns a ResponseResult with the decision, reason, and optionally a redacted
+// version of the response body when scanners are configured in "redact" mode.
+//
+// Scanners with action="block" will deny the response entirely.
+// Scanners with action="redact" will sanitize the response and allow it through.
+func (e *Evaluator) EvaluateResponse(ctx context.Context, method string, responseBody string) ResponseResult {
 	select {
 	case <-ctx.Done():
-		return Deny, "evaluation timeout exceeded"
+		return ResponseResult{Decision: Deny, Reason: "evaluation timeout exceeded"}
 	default:
 	}
 
-	// Prompt injection response scanning
+	// Prompt injection response scanning — always blocks (no redact mode)
 	if e.injectionDetector != nil {
 		if blocked, reason := e.injectionDetector.ScanResponse(method, responseBody); blocked {
-			return Deny, reason
+			return ResponseResult{Decision: Deny, Reason: reason}
 		}
 	}
 
-	// Malware scanning
+	// Malware scanning — always blocks
 	if e.malwareScanner != nil {
 		if blocked, reason := e.malwareScanner.ScanResponse(responseBody); blocked {
-			return Deny, reason
+			return ResponseResult{Decision: Deny, Reason: reason}
 		}
 	}
 
-	// Secrets scanning on responses (detect leaked credentials)
+	// Track redaction across scanners
+	workingBody := responseBody
+	wasRedacted := false
+	var redactReasons []string
+
+	// Secrets scanning on responses
 	if e.secretsScanner != nil {
-		if blocked, reason := e.secretsScanner.ScanResponse(method, responseBody); blocked {
-			return Deny, reason
+		if detected, reason := e.secretsScanner.ScanResponse(method, workingBody); detected {
+			if e.secretsScanner.Action() == "redact" {
+				redacted, found := e.secretsScanner.RedactSecrets(workingBody)
+				if len(found) > 0 {
+					workingBody = redacted
+					wasRedacted = true
+					redactReasons = append(redactReasons, fmt.Sprintf("secrets redacted: %v", found))
+				}
+			} else {
+				return ResponseResult{Decision: Deny, Reason: reason}
+			}
 		}
 	}
 
-	// PII scanning on responses (detect leaked personal data)
+	// PII scanning on responses
 	if e.piiScanner != nil {
-		if blocked, reason := e.piiScanner.ScanResponse(method, responseBody); blocked {
-			return Deny, reason
+		if detected, reason := e.piiScanner.ScanResponse(method, workingBody); detected {
+			if e.piiScanner.Action() == "redact" {
+				redacted, found := e.piiScanner.RedactPII(workingBody)
+				if len(found) > 0 {
+					workingBody = redacted
+					wasRedacted = true
+					redactReasons = append(redactReasons, fmt.Sprintf("PII redacted: %v", found))
+				}
+			} else {
+				return ResponseResult{Decision: Deny, Reason: reason}
+			}
 		}
 	}
 
-	return Allow, "response clean"
+	if wasRedacted {
+		reason := strings.Join(redactReasons, "; ")
+		return ResponseResult{
+			Decision:     Allow,
+			Reason:       "response redacted: " + reason,
+			RedactedBody: workingBody,
+			WasRedacted:  true,
+		}
+	}
+
+	return ResponseResult{Decision: Allow, Reason: "response clean"}
+}
+
+// EvaluateResponseSimple is a backward-compatible wrapper that returns only
+// (decision, reason) for callers that don't need the redacted body.
+func (e *Evaluator) EvaluateResponseSimple(ctx context.Context, method string, responseBody string) (string, string) {
+	result := e.EvaluateResponse(ctx, method, responseBody)
+	return result.Decision, result.Reason
 }
 
 // EvaluateAgentScope scans a response for cross-scope platform references.
