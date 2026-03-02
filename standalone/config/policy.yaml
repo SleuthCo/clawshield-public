@@ -109,19 +109,22 @@ vuln_scan:
 prompt_injection:
   enabled: true
   scan_requests: true
-  scan_responses: false
+  scan_responses: true   # SECURITY: scan responses for indirect prompt injection
   canary_tokens: true
   sensitivity: high
   trusted_response_tools:
     - "tools/list"
     - "resources/list"
     - "agents/list"
+    - "agents.list"
+    - "tools.list"
+    - "resources.list"
 
 # --- Malware Scanner ---
 
 malware_scan:
   enabled: true
-  scan_responses: false  # Disabled — entropy check false-positives on base64 chat content
+  scan_responses: true   # SECURITY: scan responses for malware signatures
   checks:
     - magic_bytes
     # - entropy  # disabled: false-positives on chat content
@@ -130,6 +133,30 @@ malware_scan:
     - script_detection
   entropy_threshold: 6.5
   max_decoded_size: 10485760
+
+# --- Secrets Scanner ---
+
+secrets_scan:
+  enabled: true
+  scan_requests: true
+  scan_responses: true
+  action: redact          # Redact detected secrets rather than blocking entirely
+
+# --- PII Scanner ---
+
+pii_scan:
+  enabled: true
+  scan_requests: true
+  scan_responses: true
+  action: redact          # Redact detected PII rather than blocking entirely
+  min_confidence: medium
+  exclude_tools:
+    - "tools/list"
+    - "resources/list"
+    - "agents/list"
+    - "tools.list"
+    - "resources.list"
+    - "agents.list"
 
 # --- OpenClaw-Specific ---
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -150,13 +151,46 @@ func (p *httpProxy) serveControlUIAsset(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleStatusAPI returns system status for the dashboard Status tab.
-// GET /api/v1/status — no auth required in standalone mode.
+// GET /api/v1/status — loopback-only in standalone mode, auth required otherwise.
+// SECURITY: Does not expose scanner details or session IDs to unauthenticated clients
+// to prevent reconnaissance attacks that reveal which defenses are active.
 func (p *httpProxy) handleStatusAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// Determine if this is an authenticated/trusted request
+	isTrusted := false
+	if p.standaloneMode {
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if host == "" {
+			host = r.RemoteAddr
+		}
+		isTrusted = host == "127.0.0.1" || host == "::1" || host == "localhost"
+	}
+	if !isTrusted && p.authToken != "" {
+		authHeader := r.Header.Get("Authorization")
+		isTrusted = secureTokenCompare(authHeader, "Bearer "+p.authToken)
+	}
+
+	uptime := int64(0)
+	if !p.startTime.IsZero() {
+		uptime = int64(time.Since(p.startTime).Seconds())
+	}
+
+	// Unauthenticated clients only get basic health info — no internal details
+	if !isTrusted {
+		resp := map[string]interface{}{
+			"status": "ok",
+			"uptime": uptime,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	// Authenticated/trusted clients get full details
 	agents := []string{"anvil", "harbor", "shield", "beacon", "lens"}
 
 	// Check if policy has an explicit agent allowlist
@@ -170,14 +204,12 @@ func (p *httpProxy) handleStatusAPI(w http.ResponseWriter, r *http.Request) {
 		"injection": p.evaluator != nil && p.evaluator.InjectionDetector() != nil,
 		"vuln":      p.evaluator != nil && p.evaluator.VulnScanner() != nil,
 		"malware":   p.evaluator != nil && p.evaluator.MalwareScanner() != nil,
-	}
-
-	uptime := int64(0)
-	if !p.startTime.IsZero() {
-		uptime = int64(time.Since(p.startTime).Seconds())
+		"secrets":   p.evaluator != nil && p.evaluator.SecretsScanner() != nil,
+		"pii":       p.evaluator != nil && p.evaluator.PIIScanner() != nil,
 	}
 
 	resp := map[string]interface{}{
+		"status":    "ok",
 		"agents":    agents,
 		"scanners":  scanners,
 		"sessionId": p.sessionID,

@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
@@ -90,8 +91,9 @@ func runHTTPProxy(cfg *engine.Policy, evaluator *engine.Evaluator, auditWriter *
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/audit", p.handleAuditAPI)          // M3: Audit query API
 	mux.HandleFunc("/api/v1/status", p.handleStatusAPI)        // Status API (dashboard)
-	mux.Handle("/metrics", p.metrics.Handler())                // Prometheus metrics endpoint
-	mux.HandleFunc("/v1/studio/ticket", p.handleStudioTicket) // Studio deep-link ticket generation
+	mux.Handle("/metrics", p.metrics.Handler())                                // Prometheus metrics endpoint
+	mux.HandleFunc("/v1/studio/ticket", p.handleStudioTicket)                  // Studio deep-link ticket generation
+	mux.HandleFunc("/v1/studio/ticket/validate", p.handleStudioTicketValidate) // Studio ticket validation with expiry check
 
 	if standalone {
 		// Standalone mode: serve dashboard at root, branded Control UI skin
@@ -160,7 +162,7 @@ func (p *httpProxy) handler(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleHTTP forwards non-WebSocket requests via a standard reverse proxy.
-// Applies response scanning (M4), session isolation (M2), and audit correlation (M3).
+// Applies request scanning, response scanning (M4), session isolation (M2), and audit correlation (M3).
 func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// M3: Extract bridge headers for audit correlation
 	correlationID := r.Header.Get("X-Correlation-ID")
@@ -186,6 +188,49 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	source := "direct"
 	if correlationID != "" {
 		source = "forge-bridge"
+	}
+
+	// SECURITY: Scan HTTP request bodies through the policy engine before proxying.
+	// This ensures the same protections applied to WebSocket messages also apply to
+	// HTTP REST API requests (e.g., POST /v1/chat/completions).
+	if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, p.maxBytes+1))
+		r.Body.Close()
+		if err != nil {
+			log.Printf("HTTP request body read error: %v", err)
+			http.Error(w, "Bad Request", http.StatusBadRequest)
+			return
+		}
+
+		// Enforce max message size
+		if int64(len(bodyBytes)) > p.maxBytes {
+			log.Printf("BLOCKED: HTTP request body exceeds max size (%d > %d)", len(bodyBytes), p.maxBytes)
+			p.logBridgeDecision(r.Method+" "+r.URL.Path, fmt.Sprintf("body_size=%d", len(bodyBytes)),
+				"deny", "request body exceeds max size", correlationID, classification, source, agentName)
+			http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		// Run policy evaluation on JSON request bodies
+		ct := r.Header.Get("Content-Type")
+		if strings.Contains(ct, "application/json") && len(bodyBytes) > 0 {
+			evalCtx, evalCancel := context.WithTimeout(r.Context(), time.Duration(p.timeoutMs)*time.Millisecond)
+			decision, reason := p.evaluator.EvaluateWithContext(evalCtx, string(bodyBytes))
+			evalCancel()
+
+			p.logBridgeDecision(r.Method+" "+r.URL.Path, string(bodyBytes), decision, reason,
+				correlationID, classification, source, agentName)
+
+			if decision == engine.Deny {
+				log.Printf("BLOCKED HTTP REQUEST: %s %s reason=%s agent=%s", r.Method, r.URL.Path, reason, agentName)
+				http.Error(w, `{"error":{"message":"blocked by security policy","code":-32600}}`, http.StatusForbidden)
+				return
+			}
+		}
+
+		// Restore the body for the proxy to forward
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		r.ContentLength = int64(len(bodyBytes))
 	}
 
 	proxy := &httputil.ReverseProxy{
@@ -231,7 +276,8 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}
 
-			bodyBytes, err := io.ReadAll(resp.Body)
+			// SECURITY: Limit response body read to prevent unbounded memory allocation
+			bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, p.maxBytes))
 			resp.Body.Close()
 			if err != nil {
 				resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
@@ -309,7 +355,9 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 						ResponseBlocked: respBlocked,
 						AgentName:       agentName,
 					}
-					_ = p.auditWriter.Write(&dec)
+					if err := p.auditWriter.Write(&dec); err != nil {
+						log.Printf("SECURITY WARNING: audit write failed for HTTP response scan: %v", err)
+					}
 				}
 
 				if respBlocked {
@@ -430,11 +478,12 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 		}
 
 		if msgType == websocket.MessageBinary {
-			// Forward binary frames without evaluation
-			if err := upstream.Write(ctx, msgType, data); err != nil {
-				log.Printf("Upstream WS write error: %v", err)
-				return
-			}
+			// SECURITY: Block binary frames — they could carry malicious payloads
+			// that bypass text-based policy evaluation. Binary WebSocket frames are
+			// not expected in the JSON-RPC protocol used by OpenClaw.
+			log.Printf("BLOCKED: binary WebSocket frame rejected (size=%d bytes) — binary frames are not permitted", len(data))
+			p.logDecision("<binary_frame>", fmt.Sprintf("binary_frame_size=%d", len(data)), "deny", "binary WebSocket frames are not permitted")
+			p.sendErrorFrame(ctx, client, "", "binary WebSocket frames are not permitted by security policy")
 			continue
 		}
 
@@ -581,9 +630,20 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 		}
 
 		if msgType == websocket.MessageBinary {
-			if err := client.Write(ctx, msgType, data); err != nil {
-				log.Printf("Client WS write error: %v", err)
-				return
+			// SECURITY: Block binary response frames — they could carry malicious
+			// payloads that bypass text-based response scanning.
+			log.Printf("BLOCKED: binary WebSocket response frame rejected (size=%d bytes)", len(data))
+			if p.auditWriter != nil {
+				auditDec := types.Decision{
+					Timestamp:     time.Now(),
+					SessionID:     p.sessionID,
+					Tool:          "<binary_frame_response>",
+					ArgumentsHash: fmt.Sprintf("binary_response_size=%d", len(data)),
+					Decision:      "deny",
+					Reason:        "binary WebSocket frames are not permitted",
+					PolicyVersion: "1.0",
+				}
+				_ = p.auditWriter.Write(&auditDec)
 			}
 			continue
 		}
@@ -646,7 +706,9 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 				PolicyVersion: "1.0",
 				ScannerType:   scannerType,
 			}
-			_ = p.auditWriter.Write(&auditDec)
+			if err := p.auditWriter.Write(&auditDec); err != nil {
+				log.Printf("SECURITY WARNING: audit write failed for WS response: %v", err)
+			}
 		}
 
 		if respDecision == engine.Deny {
@@ -866,14 +928,11 @@ func (p *httpProxy) handleStudioTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Authenticate with same Bearer token as gateway
+	// SECURITY: Authenticate with constant-time comparison to prevent timing attacks
 	authHeader := r.Header.Get("Authorization")
-	if p.authToken != "" {
-		expected := "Bearer " + p.authToken
-		if authHeader != expected {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
+	if p.authToken != "" && !secureTokenCompare(authHeader, "Bearer "+p.authToken) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
 	}
 
 	if p.studioToken == "" {
@@ -901,15 +960,18 @@ func (p *httpProxy) handleStudioTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate ticket: agent|timestamp|nonce
+	// SECURITY: Generate ticket with explicit expiry: agent|timestamp|expiry|nonce
+	// The expiry is embedded in the signed payload so it cannot be tampered with.
+	const ticketTTLSeconds = 300 // 5 minutes
 	now := time.Now().Unix()
+	expiry := now + ticketTTLSeconds
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
 		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
 		return
 	}
 	nonceHex := hex.EncodeToString(nonce)
-	payload := fmt.Sprintf("%s|%d|%s", agent, now, nonceHex)
+	payload := fmt.Sprintf("%s|%d|%d|%s", agent, now, expiry, nonceHex)
 
 	// HMAC-SHA256 sign
 	mac := hmac.New(sha256.New, []byte(p.studioToken))
@@ -930,13 +992,87 @@ func (p *httpProxy) handleStudioTicket(w http.ResponseWriter, r *http.Request) {
 	p.logBridgeDecision("studio/ticket", fmt.Sprintf("agent=%s", agent), "allow", "studio ticket generated",
 		req.CorrelationID, "", "forge-bridge", agent)
 
-	log.Printf("STUDIO TICKET: agent=%s correlationId=%s expiresIn=300s", agent, req.CorrelationID)
+	log.Printf("STUDIO TICKET: agent=%s correlationId=%s expiresIn=%ds", agent, req.CorrelationID, ticketTTLSeconds)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"url":       studioURL,
 		"agent":     agent,
-		"expiresIn": 300,
+		"expiresIn": ticketTTLSeconds,
+	})
+}
+
+// validateStudioTicket validates an HMAC-signed Studio ticket, checking signature
+// integrity and expiry. Returns the agent name if valid, or an error.
+// GET /v1/studio/ticket/validate?ticket=<base64url>
+func (p *httpProxy) handleStudioTicketValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if p.studioToken == "" {
+		http.Error(w, `{"error":"Studio token not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	ticketB64 := r.URL.Query().Get("ticket")
+	if ticketB64 == "" {
+		http.Error(w, `{"valid":false,"error":"missing ticket parameter"}`, http.StatusBadRequest)
+		return
+	}
+
+	ticketBytes, err := base64.RawURLEncoding.DecodeString(ticketB64)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{"valid": false, "error": "invalid ticket encoding"})
+		return
+	}
+
+	// Ticket format: agent|timestamp|expiry|nonce|signature
+	parts := strings.SplitN(string(ticketBytes), "|", 5)
+	if len(parts) != 5 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{"valid": false, "error": "invalid ticket format"})
+		return
+	}
+
+	agent := parts[0]
+	// parts[1] = issued timestamp (informational)
+	expiryStr := parts[2]
+	// parts[3] = nonce
+	providedSig := parts[4]
+
+	// Verify HMAC signature over payload (everything before the last |)
+	payloadEnd := strings.LastIndex(string(ticketBytes), "|")
+	payload := string(ticketBytes)[:payloadEnd]
+
+	mac := hmac.New(sha256.New, []byte(p.studioToken))
+	mac.Write([]byte(payload))
+	expectedSig := hex.EncodeToString(mac.Sum(nil))
+
+	if !secureTokenCompare(providedSig, expectedSig) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{"valid": false, "error": "invalid signature"})
+		return
+	}
+
+	// SECURITY: Check expiry — the expiry timestamp is embedded in the signed payload
+	// so it cannot be tampered with after HMAC verification passes.
+	expiryUnix, err := strconv.ParseInt(expiryStr, 10, 64)
+	if err != nil || time.Now().Unix() > expiryUnix {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{"valid": false, "error": "ticket expired"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"valid": true,
+		"agent": agent,
 	})
 }
 
@@ -948,15 +1084,27 @@ func (p *httpProxy) handleAuditAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Skip auth in standalone mode (dashboard polls this directly)
-	if !p.standaloneMode {
-		authHeader := r.Header.Get("Authorization")
-		if p.authToken != "" {
-			expected := "Bearer " + p.authToken
-			if authHeader != expected {
+	// SECURITY: Authenticate audit API requests even in standalone mode.
+	// In standalone mode, allow requests from loopback addresses (dashboard)
+	// but require auth from all other sources to prevent information disclosure.
+	if p.standaloneMode {
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if host == "" {
+			host = r.RemoteAddr
+		}
+		isLoopback := host == "127.0.0.1" || host == "::1" || host == "localhost"
+		if !isLoopback {
+			authHeader := r.Header.Get("Authorization")
+			if p.authToken != "" && !secureTokenCompare(authHeader, "Bearer "+p.authToken) {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
+		}
+	} else {
+		authHeader := r.Header.Get("Authorization")
+		if p.authToken != "" && !secureTokenCompare(authHeader, "Bearer "+p.authToken) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
 		}
 	}
 
@@ -1065,11 +1213,19 @@ func singleJoiningSlash(a, b string) string {
 	return a + b
 }
 
+// secureTokenCompare performs a constant-time comparison of two token strings
+// to prevent timing side-channel attacks on authentication tokens.
+func secureTokenCompare(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
 // generateAuthToken creates a cryptographically random 48-char hex token.
+// SECURITY: Panics if crypto/rand fails rather than falling back to a
+// predictable timestamp-based token that could be guessed by an attacker.
 func generateAuthToken() string {
 	buf := make([]byte, 24)
 	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("tok-%d", time.Now().UnixNano())
+		log.Fatalf("FATAL: crypto/rand failed — refusing to generate insecure auth token: %v", err)
 	}
 	return hex.EncodeToString(buf)
 }
