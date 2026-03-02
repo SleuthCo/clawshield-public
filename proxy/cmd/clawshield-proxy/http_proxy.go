@@ -248,17 +248,21 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				scannerType := ""
 
 				evalCtx, evalCancel := context.WithTimeout(r.Context(), time.Duration(p.timeoutMs)*time.Millisecond)
-				d, reason := p.evaluator.EvaluateResponse(evalCtx, "chat/completions", content)
+				respResult := p.evaluator.EvaluateResponse(evalCtx, "chat/completions", content)
 				evalCancel()
 
-				if d == engine.Deny {
+				if respResult.Decision == engine.Deny {
 					respBlocked = true
-					respReason = reason
-					if strings.HasPrefix(reason, "prompt_injection") {
+					respReason = respResult.Reason
+					if strings.HasPrefix(respResult.Reason, "prompt_injection") {
 						scannerType = "injection"
-					} else if strings.HasPrefix(reason, "malware") {
+					} else if strings.HasPrefix(respResult.Reason, "malware") {
 						scannerType = "malware"
 					}
+				} else if respResult.WasRedacted {
+					content = respResult.RedactedBody
+					respReason = respResult.Reason
+					scannerType = "redaction"
 				}
 
 				// Layer 3: Agent scope validation
@@ -558,20 +562,28 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 		respReason := "response clean"
 		scannerType := ""
 
-		if p.evaluator.InjectionDetector() != nil || p.evaluator.MalwareScanner() != nil {
+		if p.evaluator.InjectionDetector() != nil || p.evaluator.MalwareScanner() != nil || p.evaluator.SecretsScanner() != nil || p.evaluator.PIIScanner() != nil {
 			evalCtx, evalCancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
-			d, r := p.evaluator.EvaluateResponse(evalCtx, respMethod, message)
+			respResult := p.evaluator.EvaluateResponse(evalCtx, respMethod, message)
 			evalCancel()
-			respDecision = d
-			respReason = r
-			if d == engine.Deny {
-				if len(r) > 0 {
-					if r[0] == 'p' {
+			respDecision = respResult.Decision
+			respReason = respResult.Reason
+			if respResult.Decision == engine.Deny {
+				if len(respResult.Reason) > 0 {
+					if respResult.Reason[0] == 'p' {
 						scannerType = "injection"
-					} else if r[0] == 'm' {
+					} else if respResult.Reason[0] == 'm' {
 						scannerType = "malware"
+					} else if respResult.Reason[0] == 's' {
+						scannerType = "secrets"
 					}
 				}
+			} else if respResult.WasRedacted {
+				// Replace the response data with the redacted version
+				message = respResult.RedactedBody
+				data = []byte(respResult.RedactedBody)
+				scannerType = "redaction"
+				log.Printf("REDACTED RESPONSE: method=%s reason=%s", respMethod, respResult.Reason)
 			}
 		}
 
