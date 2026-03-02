@@ -1,6 +1,6 @@
 //go:build integration
 
-package integration
+package engine_test
 
 import (
 	"context"
@@ -71,13 +71,13 @@ vuln_scan:
 			name:     "benign query allowed",
 			message:  `{"method": "db.query", "params": {"sql": "SELECT name FROM users WHERE id = 42"}}`,
 			decision: "allow",
-			reason:   "default allowed",
+			reason:   "allowlist",
 		},
 		{
 			name:     "benign fetch allowed",
 			message:  `{"method": "web.fetch", "params": {"url": "https://api.github.com/repos"}}`,
 			decision: "allow",
-			reason:   "default allowed",
+			reason:   "allowlist",
 		},
 	}
 
@@ -420,7 +420,7 @@ allowlist:
 
 func TestScannerIntegration_FullPipeline(t *testing.T) {
 	// Load the security_scanning.yaml example policy
-	policyFile := filepath.Join("..", "policy", "examples", "security_scanning.yaml")
+	policyFile := filepath.Join("..", "..", "..", "policy", "examples", "security_scanning.yaml")
 	policy, err := config.Load(policyFile)
 	if err != nil {
 		t.Skipf("security_scanning.yaml not found, skipping: %v", err)

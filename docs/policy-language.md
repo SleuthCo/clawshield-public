@@ -233,6 +233,48 @@ custom_patterns:
     pattern: "intl_svc_[a-zA-Z0-9]{32}"
     description: "internal service-to-service token"
 ```
+### `adaptive`
+
+Configures cross-layer adaptive security responses. When enabled, security events from one layer (e.g., eBPF detecting privilege escalation) automatically trigger defensive responses in other layers (e.g., proxy elevating injection sensitivity).
+
+#### `enabled` (boolean)
+
+Enable or disable the cross-layer adaptive controller.
+
+#### `socket_path` (string)
+
+Path to the Unix domain socket used for inter-layer communication. Default: `/tmp/clawshield-events.sock`
+
+#### `rules` (array of objects)
+
+Each rule defines a trigger condition and an automatic response action.
+
+**Trigger fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source` | string | Event source: `proxy`, `ebpf`, `firewall` |
+| `type` | string | Event type: `privesc`, `exec_suspicious`, `port_scan`, `file_access`, `injection_blocked`, `malware_blocked`, `vuln_blocked`, `policy_deny` |
+| `min_severity` | string | Minimum severity to match: `critical`, `high`, `medium`, `low`, `info` |
+| `min_count` | integer | Minimum number of matching events within the time window before firing |
+| `window_seconds` | integer | Time window for count threshold (default: 60) |
+
+**Action types:**
+
+| Action | Description |
+|--------|-------------|
+| `elevate_sensitivity` | Temporarily elevates the injection scanner sensitivity level |
+| `restrict_domains` | Temporarily restricts domain allowlist access |
+| `elevate_default_deny` | Temporarily overrides default action to `deny` |
+| `block_session` | Temporarily blocks the triggering session |
+| `add_temp_firewall_rule` | Adds a temporary iptables block rule for the destination IP |
+
+**Params:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `duration_seconds` | integer | How long the adaptive response stays active (default: 300) |
+| `level` | integer | Sensitivity level for `elevate_sensitivity`: 1=low, 2=medium, 3=high |
 
 **Example:**
 
@@ -252,6 +294,25 @@ secrets_scan:
   exclude_tools:
     - vault.read
     - secrets.get
+adaptive:
+  enabled: true
+  socket_path: /tmp/clawshield-events.sock
+  rules:
+    - trigger:
+        source: ebpf
+        type: privesc
+      action: elevate_sensitivity
+      params:
+        duration_seconds: 300
+
+    - trigger:
+        source: proxy
+        type: injection_blocked
+        min_count: 3
+        window_seconds: 60
+      action: elevate_default_deny
+      params:
+        duration_seconds: 900
 ```
 
 ## Examples
@@ -261,6 +322,7 @@ See `/policy/examples/` for sample policies covering:
 - Production strict (deny-by-default)
 - Read-only mode
 - Offline/no-network mode
+- Cross-layer adaptive response
 
 ## Best Practices
 
@@ -268,5 +330,7 @@ See `/policy/examples/` for sample policies covering:
 - Use precise patterns over wildcards (`*`) where possible.
 - Test policies with unit tests before deployment.
 - Rotate secrets regularly — policy redaction is a fallback, not a replacement.
+- Enable `adaptive` in production to get automated cross-layer defense-in-depth.
+- Start with conservative `duration_seconds` values and tune based on your threat model.
 
 > **Note**: This schema is versioned. Ensure your validator and policy versions are compatible.

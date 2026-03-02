@@ -202,7 +202,7 @@ Detects: fork bombs, sensitive file access, privilege escalation, anomalous netw
 
 ## Architecture
 
-ClawShield uses **defense-in-depth** — three independent security layers:
+ClawShield uses **defense-in-depth** — three security layers connected by a cross-layer event bus:
 
 ```
 Layer 1: Application (ClawShield Proxy)
@@ -214,6 +214,7 @@ Layer 2: Network (ClawShield Firewall)
   ▪ iptables egress rules
   ▪ Domain/IP allowlist
   ▪ Blocks unapproved connections
+  ▪ Dynamic temporary rules from cross-layer events
 
 Layer 3: Kernel (ClawShield eBPF)
   ▪ Syscall monitoring
@@ -222,6 +223,41 @@ Layer 3: Kernel (ClawShield eBPF)
 ```
 
 Each layer works independently. If one is bypassed, the others still protect.
+
+### Cross-Layer Event Bus
+
+The three layers communicate via a Unix socket-based event bus, enabling **adaptive security responses** across layers:
+
+```
+┌──────────────┐                          ┌──────────────┐
+│  eBPF        │──── Unix Socket ────────▶│  Proxy       │
+│  (Layer 3)   │  /tmp/clawshield-       │  (Layer 1)   │
+│  Produces:   │   events.sock           │  Produces:   │
+│  • privesc   │                          │  • injection │
+│  • port_scan │◀── Adaptive Controller ──│  • malware   │
+│  • file_access│                         │  • vuln_scan │
+└──────────────┘                          └──────────────┘
+                         │
+                         ▼
+                ┌──────────────┐
+                │  Firewall    │
+                │  (Layer 2)   │
+                │  Consumes:   │
+                │  • temp block│
+                │    rules     │
+                └──────────────┘
+```
+
+**Example adaptive reactions:**
+
+| Trigger | Automatic Response |
+|---------|-------------------|
+| eBPF detects privilege escalation | Proxy elevates injection sensitivity to `high` for 5 min |
+| eBPF detects port scanning | Proxy restricts domain access for 10 min |
+| Proxy blocks 3+ injections in 60s | Default action forced to `deny` for 15 min |
+| Proxy detects malware in response | Firewall adds temporary IP block rules |
+
+Enable cross-layer integration by adding an `adaptive` section to your policy YAML. See [policy/examples/adaptive_crosslayer.yaml](policy/examples/adaptive_crosslayer.yaml) for a complete example.
 
 ---
 
