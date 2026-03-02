@@ -149,6 +149,12 @@ The core of ClawShield. An HTTP reverse proxy that intercepts all traffic betwee
 - **Vulnerability scanning** — flags SQL injection, SSRF, path traversal, command injection, XSS
 - **Malware analysis** — detects executables, scripts, archive bombs, known signatures
 
+**Streaming Response Scanning:**
+- Real-time chunk-by-chunk scanning of SSE and NDJSON streams — no buffering delay
+- Sliding overlap window (200 chars) catches patterns spanning chunk boundaries
+- Context-carrying from request to response reduces false positives (e.g., code generation responses can contain script patterns)
+- Per-chunk redaction of secrets and PII in streaming output
+
 **Policy engine** — YAML-based, deny-by-default:
 ```yaml
 default_action: deny

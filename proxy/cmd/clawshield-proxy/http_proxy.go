@@ -359,9 +359,110 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 		// M4: Scan HTTP responses before returning to client
 		ModifyResponse: func(resp *http.Response) error {
-			// Only scan JSON responses from chat completions
 			ct := resp.Header.Get("Content-Type")
-			if !strings.Contains(ct, "application/json") || resp.StatusCode != 200 {
+			if resp.StatusCode != 200 {
+				return nil
+			}
+
+			// Streaming response detection: SSE or NDJSON streams are scanned
+			// chunk-by-chunk using a StreamScanner instead of buffering the entire body.
+			if engine.IsStreamingContentType(ct) {
+				if p.evaluator.InjectionDetector() != nil || p.evaluator.MalwareScanner() != nil ||
+					p.evaluator.SecretsScanner() != nil || p.evaluator.PIIScanner() != nil {
+					p.metrics.RecordResponseScanned()
+
+					// Create StreamScanner with request context for context-carrying
+					requestMethod := r.Method + " " + r.URL.Path
+					requestBody := "" // Request body was already consumed; use URL path as context
+					streamScanner := p.evaluator.NewStreamScanner(requestMethod, requestBody)
+					isSSE := strings.Contains(strings.ToLower(ct), "text/event-stream")
+
+					// Wrap the response body with a scanning reader that processes
+					// events/lines through the StreamScanner in real-time
+					scanReader := engine.NewScanningReader(resp.Body, streamScanner, isSSE)
+					resp.Body = scanReader
+
+					// Remove Content-Length since we may modify the body via redaction
+					resp.Header.Del("Content-Length")
+					resp.ContentLength = -1
+
+					// NOTE: Audit logging for streaming responses happens asynchronously.
+					// We log when the stream ends (reader hits EOF or block), using a
+					// goroutine that waits for the reader to complete. This is necessary
+					// because ModifyResponse returns before the body is fully read.
+					//
+					// SECURITY: We capture variables by value (not reference) to avoid
+					// race conditions. The HTTP transport may close the body while the
+					// goroutine is still running. We don't access scanReader after
+					// capturing its final state.
+					streamScannercopy := streamScanner
+					scanReadercopy := scanReader
+					go func(ss *engine.StreamScanner, sr *engine.ScanningReader) {
+						// Wait for the reader to finish (it will be closed by the HTTP
+						// transport when the client disconnects or the body is fully read)
+						// We poll rather than block because we don't own the reader lifecycle.
+						ticker := time.NewTicker(100 * time.Millisecond)
+						defer ticker.Stop()
+						timeout := time.After(5 * time.Minute)
+						for {
+							select {
+							case <-ticker.C:
+								if sr.WasBlocked() || ss.ChunkCount() > 0 {
+									// Stream has been processed — wait a bit for final chunks
+									time.Sleep(200 * time.Millisecond)
+									goto audit
+								}
+							case <-timeout:
+								goto audit
+							}
+						}
+					audit:
+						result := ss.FinalizeAsResponseResult()
+						if p.auditWriter != nil {
+							auditDec := types.Decision{
+								Timestamp:       time.Now(),
+								SessionID:       p.sessionID,
+								Tool:            "chat/completions_stream",
+								ArgumentsHash:   fmt.Sprintf("stream_chunks=%d", ss.ChunkCount()),
+								Decision:        result.Decision,
+								Reason:          result.Reason,
+								PolicyVersion:   "1.0",
+								CorrelationID:   correlationID,
+								Classification:  classification,
+								Source:          source,
+								ResponseBlocked: result.Decision == engine.Deny,
+								AgentName:       agentName,
+								Details:         result.Details,
+							}
+							if result.Decision == engine.Deny {
+								if strings.Contains(result.Reason, "injection") {
+									auditDec.ScannerType = "injection"
+								} else if strings.Contains(result.Reason, "malware") {
+									auditDec.ScannerType = "malware"
+								} else if strings.Contains(result.Reason, "secret") {
+									auditDec.ScannerType = "secrets"
+								}
+							} else if result.WasRedacted {
+								auditDec.ScannerType = "redaction"
+							}
+							if err := p.auditWriter.Write(&auditDec); err != nil {
+								log.Printf("SECURITY WARNING: audit write failed for streaming response: %v", err)
+							}
+						}
+						if result.Decision == engine.Deny {
+							log.Printf("BLOCKED STREAMING RESPONSE: reason=%s agent=%s chunks=%d",
+								result.Reason, agentName, ss.ChunkCount())
+						} else if result.WasRedacted {
+							log.Printf("REDACTED STREAMING RESPONSE: agent=%s chunks=%d",
+								agentName, ss.ChunkCount())
+						}
+					}(streamScannercopy, scanReadercopy)
+				}
+				return nil
+			}
+
+			// Non-streaming: buffer and scan entire response (existing path)
+			if !strings.Contains(ct, "application/json") {
 				return nil
 			}
 

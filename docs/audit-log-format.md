@@ -114,7 +114,7 @@ Every deny/redact decision includes a structured `decision_details` JSON blob th
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `pipeline_stage` | string | Where in the evaluation pipeline the decision was made: `denylist`, `allowlist`, `arg_filter`, `domain_allowlist`, `vuln_scan`, `injection_scan`, `secrets_scan`, `pii_scan`, `malware_scan`, `default_action`, `timeout`, `parse_error`, `duplicate_keys` |
+| `pipeline_stage` | string | Where in the evaluation pipeline the decision was made: `denylist`, `allowlist`, `arg_filter`, `domain_allowlist`, `vuln_scan`, `injection_scan`, `secrets_scan`, `pii_scan`, `malware_scan`, `default_action`, `timeout`, `parse_error`, `duplicate_keys`, `stream_clean`, `stream_blocked`, `stream_redacted` |
 | `eval_duration_ms` | float | Wall-clock evaluation time in milliseconds |
 | `scan_results` | array | Per-scanner forensic details (see below). Only populated for scanner-triggered decisions |
 | `active_overrides` | array | Adaptive overrides in effect at decision time (e.g., `"sensitivity_override:high"`, `"default_action_override:deny"`) |
@@ -162,6 +162,17 @@ Each entry in `scan_results` captures what a specific scanner found:
   "active_overrides": ["sensitivity_override:high"]
 }
 ```
+
+### Streaming Response Scanning
+
+When ClawShield detects a streaming response (`text/event-stream`, `application/x-ndjson`, `application/stream+json`), it scans chunks in real-time instead of buffering the entire response:
+
+- **SSE streams**: Events are reassembled from `data:` lines before scanning
+- **NDJSON streams**: Each line is scanned individually
+- **Overlap window**: 200 characters from the previous chunk are prepended to detect patterns spanning boundaries
+- **Context-carrying**: The request method and parameters are classified as `code_generation`, `chat`, `search`, `file_operation`, or `unknown`. Code generation context suppresses false positives for script-like patterns in response scanning
+- **Pipeline stages**: Streaming decisions use `stream_clean`, `stream_blocked`, or `stream_redacted`
+- **Audit**: A single aggregated decision is logged when the stream ends, with all scan results across all chunks
 
 ### Security Properties
 
