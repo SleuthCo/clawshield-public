@@ -1,5 +1,6 @@
 package main
 
+
 import (
 	"context"
 	"encoding/json"
@@ -539,3 +540,134 @@ func mustParseURL(raw string) *url.URL {
 
 // Ensure scanner import is used
 var _ = scanner.VulnScanConfig{}
+func TestInjectCanaryToken(t *testing.T) {
+	canary := "__clawshield_canary_abc123__"
+
+	tests := []struct {
+		name     string
+		input    string
+		wantErr  bool
+		hasCanary bool
+	}{
+		{
+			name:      "normal MCP message with params",
+			input:     `{"method":"chat.send","params":{"text":"hello"}}`,
+			wantErr:   false,
+			hasCanary: true,
+		},
+		{
+			name:      "message with nested params",
+			input:     `{"method":"tools.invoke","params":{"tool":"search","query":"test"}}`,
+			wantErr:   false,
+			hasCanary: true,
+		},
+		{
+			name:      "message without params",
+			input:     `{"method":"tools.list"}`,
+			wantErr:   false,
+			hasCanary: false, // No params to inject into
+		},
+		{
+			name:      "message with array params",
+			input:     `{"method":"batch","params":[1,2,3]}`,
+			wantErr:   false,
+			hasCanary: false, // Array params — skip injection
+		},
+		{
+			name:      "invalid JSON",
+			input:     `not json`,
+			wantErr:   true,
+			hasCanary: false,
+		},
+		{
+			name:      "empty params object",
+			input:     `{"method":"test","params":{}}`,
+			wantErr:   false,
+			hasCanary: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := injectCanaryToken([]byte(tt.input), canary)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			resultStr := string(result)
+			if tt.hasCanary {
+				if !strings.Contains(resultStr, canary) {
+					t.Errorf("expected canary in output, got: %s", resultStr)
+				}
+				if !strings.Contains(resultStr, "_clawshield_canary") {
+					t.Errorf("expected _clawshield_canary field, got: %s", resultStr)
+				}
+
+				// Verify the result is valid JSON
+				var parsed map[string]json.RawMessage
+				if err := json.Unmarshal(result, &parsed); err != nil {
+					t.Fatalf("result is not valid JSON: %v", err)
+				}
+
+				// Verify params still contains original fields
+				var params map[string]json.RawMessage
+				if err := json.Unmarshal(parsed["params"], &params); err != nil {
+					t.Fatalf("params is not valid JSON: %v", err)
+				}
+				if _, ok := params["_clawshield_canary"]; !ok {
+					t.Error("_clawshield_canary field missing from params")
+				}
+			} else {
+				// Should return unchanged or without canary
+				if strings.Contains(resultStr, canary) {
+					t.Errorf("canary should not be injected, got: %s", resultStr)
+				}
+			}
+		})
+	}
+}
+
+func TestInjectCanaryToken_PreservesOriginalFields(t *testing.T) {
+	canary := "__clawshield_canary_test123__"
+	input := `{"method":"search","params":{"query":"test","limit":10},"id":42}`
+
+	result, err := injectCanaryToken([]byte(input), canary)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	// Verify method and id are preserved
+	if string(parsed["method"]) != `"search"` {
+		t.Errorf("method not preserved, got: %s", string(parsed["method"]))
+	}
+	if string(parsed["id"]) != "42" {
+		t.Errorf("id not preserved, got: %s", string(parsed["id"]))
+	}
+
+	// Verify params contains original fields + canary
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(parsed["params"], &params); err != nil {
+		t.Fatalf("params is not valid JSON: %v", err)
+	}
+
+	if string(params["query"]) != `"test"` {
+		t.Errorf("query not preserved, got: %s", string(params["query"]))
+	}
+	if string(params["limit"]) != "10" {
+		t.Errorf("limit not preserved, got: %s", string(params["limit"]))
+	}
+	if _, ok := params["_clawshield_canary"]; !ok {
+		t.Error("canary not injected")
+	}
+}

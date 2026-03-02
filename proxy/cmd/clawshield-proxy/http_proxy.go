@@ -522,7 +522,20 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 		}
 
 		log.Printf("ALLOWED: method=%s", method)
-		if err := upstream.Write(ctx, msgType, data); err != nil {
+
+		// Inject canary token into outbound params if enabled.
+		// If the canary leaks back in a response, the injection scanner's
+		// Tier 3 check detects cross-tool data exfiltration.
+		outData := data
+		if injector := p.evaluator.InjectionDetector(); injector != nil {
+			if canary := injector.GetCanaryToken(); canary != "" {
+				if injected, err := injectCanaryToken(data, canary); err == nil {
+					outData = injected
+				}
+			}
+		}
+
+		if err := upstream.Write(ctx, msgType, outData); err != nil {
 			log.Printf("Upstream WS write error: %v", err)
 			return
 		}
@@ -610,6 +623,43 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 			return
 		}
 	}
+}
+
+// injectCanaryToken adds a hidden canary token field into the params of an
+// outbound MCP JSON-RPC message. The canary is injected as a
+// "_clawshield_canary" field in the params object. If the canary later
+// appears in a response from a different tool, it indicates cross-tool
+// data exfiltration (a sign of prompt injection).
+//
+// The function is a no-op if the message has no params object.
+func injectCanaryToken(data []byte, canary string) ([]byte, error) {
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return nil, err
+	}
+
+	paramsRaw, ok := msg["params"]
+	if !ok || len(paramsRaw) == 0 || paramsRaw[0] != '{' {
+		// No params or params is not an object — skip injection
+		return data, nil
+	}
+
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(paramsRaw, &params); err != nil {
+		return nil, err
+	}
+
+	// Inject the canary as a hidden metadata field
+	canaryJSON, _ := json.Marshal(canary)
+	params["_clawshield_canary"] = canaryJSON
+
+	newParams, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+
+	msg["params"] = newParams
+	return json.Marshal(msg)
 }
 
 // classifyDenyReason maps a deny reason string to an event type and severity
