@@ -66,6 +66,8 @@ type Evaluator struct {
 	piiScanner         *scanner.PIIScanner
 
 	// Cross-layer adaptive override fields
+	// Cross-layer adaptive override fields — allow temporary policy changes
+	// in response to detected threats (e.g. elevate sensitivity when under attack).
 	overrideMu             sync.RWMutex
 	sensitivityOverride    string
 	sensitivityOverrideExp time.Time
