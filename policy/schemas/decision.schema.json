@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ClawShield Decision Log Schema",
-  "description": "Schema for audit decision log entries.",
+  "description": "Schema for audit decision log entries with decision explainability.",
   "type": "object",
   "required": ["timestamp", "action", "tool", "result", "policy_id"],
   "properties": {
@@ -30,6 +30,79 @@
     "metadata": {
       "type": "object",
       "additionalProperties": true
+    },
+    "decision_details": {
+      "type": "object",
+      "description": "Structured forensic detail explaining why a decision was made.",
+      "properties": {
+        "pipeline_stage": {
+          "type": "string",
+          "description": "Evaluation pipeline stage that produced the decision.",
+          "enum": ["denylist", "allowlist", "arg_filter", "domain_allowlist", "vuln_scan", "injection_scan", "secrets_scan", "pii_scan", "malware_scan", "default_action", "timeout", "parse_error", "duplicate_keys", "response_clean", "response_injection", "response_malware", "response_secrets", "response_pii"]
+        },
+        "eval_duration_ms": {
+          "type": "number",
+          "description": "Evaluation wall-clock time in milliseconds.",
+          "minimum": 0
+        },
+        "scan_results": {
+          "type": "array",
+          "description": "Per-scanner forensic details. Only populated for scanner-triggered decisions.",
+          "items": {
+            "$ref": "#/definitions/scan_result"
+          }
+        },
+        "active_overrides": {
+          "type": "array",
+          "description": "Adaptive overrides in effect at decision time.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["pipeline_stage", "eval_duration_ms"]
+    }
+  },
+  "definitions": {
+    "scan_result": {
+      "type": "object",
+      "description": "Forensic output from a single security scanner.",
+      "required": ["scanner", "rule_id", "description", "confidence", "blocked"],
+      "properties": {
+        "scanner": {
+          "type": "string",
+          "description": "Scanner that produced this result.",
+          "enum": ["vuln", "injection", "malware", "secrets", "pii"]
+        },
+        "rule_id": {
+          "type": "string",
+          "description": "Stable machine-readable detection rule identifier."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable explanation of detection."
+        },
+        "match_excerpt": {
+          "type": "string",
+          "description": "Safely truncated/redacted excerpt of matched content. Secrets and PII are always redacted.",
+          "maxLength": 103
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "blocked": {
+          "type": "boolean",
+          "description": "Whether this result caused a deny decision."
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Scanner-specific key-value metadata.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   "additionalProperties": false

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -71,6 +72,20 @@ func WithIncludeToolCall() QueryOption {
 	}
 }
 
+// WithScannerType filters by scanner_type.
+func WithScannerType(scannerType string) QueryOption {
+	return func(q *query) {
+		q.scannerType = scannerType
+	}
+}
+
+// WithRuleID filters by rule_id in decision_details JSON.
+func WithRuleID(ruleID string) QueryOption {
+	return func(q *query) {
+		q.ruleID = ruleID
+	}
+}
+
 type query struct {
 	db              *sql.DB
 	from            time.Time
@@ -79,6 +94,8 @@ type query struct {
 	tool            string
 	argsHashPrefix  string
 	includeToolCall bool
+	scannerType     string
+	ruleID          string
 }
 
 func (q *query) execute(ctx context.Context) ([]*types.DecisionLog, error) {
@@ -105,8 +122,20 @@ func (q *query) execute(ctx context.Context) ([]*types.DecisionLog, error) {
 		where = append(where, "arguments_hash LIKE ?")
 		args = append(args, q.argsHashPrefix+"%")
 	}
+	if q.scannerType != "" {
+		where = append(where, "scanner_type = ?")
+		args = append(args, q.scannerType)
+	}
+	if q.ruleID != "" {
+		// SECURITY: Escape LIKE wildcards in user-provided ruleID to prevent
+		// unintended pattern matching. The value is parameterized (safe from SQL
+		// injection) but wildcards could match broader than intended.
+		escapedRuleID := strings.NewReplacer("%", "\\%", "_", "\\_").Replace(q.ruleID)
+		where = append(where, "decision_details LIKE ? ESCAPE '\\'")
+		args = append(args, "%\"rule_id\":\""+escapedRuleID+"\"%")
+	}
 
-	queryStr := `SELECT d.decision_id, d.timestamp, d.session_id, d.tool, d.arguments_hash, d.decision, d.reason, d.policy_version`
+	queryStr := `SELECT d.decision_id, d.timestamp, d.session_id, d.tool, d.arguments_hash, d.decision, d.reason, d.policy_version, d.decision_details`
 	if q.includeToolCall {
 		queryStr += ", tc.request_json, tc.response_json"
 	}
@@ -136,6 +165,7 @@ func (q *query) execute(ctx context.Context) ([]*types.DecisionLog, error) {
 		if q.includeToolCall {
 			var call types.ToolCall
 			var reqJSON, respJSON sql.NullString
+			var detailsJSON sql.NullString
 			err := rows.Scan(
 				&decision.DecisionID,
 				&decision.Timestamp,
@@ -145,11 +175,22 @@ func (q *query) execute(ctx context.Context) ([]*types.DecisionLog, error) {
 				&decision.Decision,
 				&decision.Reason,
 				&decision.PolicyVersion,
+				&detailsJSON,
 				&reqJSON,
 				&respJSON,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("scan decision with tool call: %w", err)
+			}
+			if detailsJSON.Valid {
+				details, err := types.UnmarshalDecisionDetail([]byte(detailsJSON.String))
+				if err != nil {
+					// SECURITY: Gracefully handle corrupt JSON rather than failing
+					// the entire query — a single corrupt row shouldn't block forensics.
+					log.Printf("WARNING: corrupt decision_details JSON for decision_id=%d: %v", decision.DecisionID, err)
+				} else {
+					decision.Details = details
+				}
 			}
 			if reqJSON.Valid {
 				call.RequestJSON = []byte(reqJSON.String)
@@ -161,6 +202,7 @@ func (q *query) execute(ctx context.Context) ([]*types.DecisionLog, error) {
 			call.CreatedAt = decision.Timestamp
 			toolCallPtr = &call
 		} else {
+			var detailsJSON sql.NullString
 			err := rows.Scan(
 				&decision.DecisionID,
 				&decision.Timestamp,
@@ -170,9 +212,18 @@ func (q *query) execute(ctx context.Context) ([]*types.DecisionLog, error) {
 				&decision.Decision,
 				&decision.Reason,
 				&decision.PolicyVersion,
+				&detailsJSON,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("scan decision: %w", err)
+			}
+			if detailsJSON.Valid {
+				details, err := types.UnmarshalDecisionDetail([]byte(detailsJSON.String))
+				if err != nil {
+					log.Printf("WARNING: corrupt decision_details JSON for decision_id=%d: %v", decision.DecisionID, err)
+				} else {
+					decision.Details = details
+				}
 			}
 		}
 

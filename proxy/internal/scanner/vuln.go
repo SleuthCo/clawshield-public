@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/SleuthCo/clawshield/shared/types"
 )
 
 // VulnType identifies the class of vulnerability detected.
@@ -75,48 +77,58 @@ func NewVulnScanner(cfg *VulnScanConfig) *VulnScanner {
 	return s
 }
 
-// Scan checks decoded tool arguments for vulnerability payloads.
-// Returns (blocked bool, reason string).
-func (s *VulnScanner) Scan(method string, decodedParams string) (bool, string) {
+// ScanDetail checks decoded tool arguments for vulnerability payloads.
+// Returns a *types.ScanResult if a vulnerability is detected, nil otherwise.
+func (s *VulnScanner) ScanDetail(method string, decodedParams string) *types.ScanResult {
 	if s == nil {
-		return false, ""
+		return nil
 	}
 	if s.excludeTools[method] {
-		return false, ""
+		return nil
 	}
 
 	lower := strings.ToLower(decodedParams)
 
 	if s.enabledRules[VulnSQLi] {
-		if blocked, reason := s.checkSQLi(lower); blocked {
-			return true, reason
+		if result := s.checkSQLiDetail(lower); result != nil {
+			return result
 		}
 	}
 
 	if s.enabledRules[VulnSSRF] {
-		if blocked, reason := s.checkSSRF(decodedParams); blocked {
-			return true, reason
+		if result := s.checkSSRFDetail(decodedParams); result != nil {
+			return result
 		}
 	}
 
 	if s.enabledRules[VulnPathTraversal] {
-		if blocked, reason := s.checkPathTraversal(decodedParams, lower); blocked {
-			return true, reason
+		if result := s.checkPathTraversalDetail(decodedParams, lower); result != nil {
+			return result
 		}
 	}
 
 	if s.enabledRules[VulnCommandInjection] {
-		if blocked, reason := s.checkCommandInjection(decodedParams); blocked {
-			return true, reason
+		if result := s.checkCommandInjectionDetail(decodedParams); result != nil {
+			return result
 		}
 	}
 
 	if s.enabledRules[VulnXSS] {
-		if blocked, reason := s.checkXSS(lower); blocked {
-			return true, reason
+		if result := s.checkXSSDetail(lower); result != nil {
+			return result
 		}
 	}
 
+	return nil
+}
+
+// Scan checks decoded tool arguments for vulnerability payloads.
+// Returns (blocked bool, reason string).
+func (s *VulnScanner) Scan(method string, decodedParams string) (bool, string) {
+	result := s.ScanDetail(method, decodedParams)
+	if result != nil {
+		return true, result.Description
+	}
 	return false, ""
 }
 
@@ -148,11 +160,27 @@ func (s *VulnScanner) compileSQLiPatterns() {
 	s.sqliPatterns = compilePatterns(patterns)
 }
 
-func (s *VulnScanner) checkSQLi(lower string) (bool, string) {
+func (s *VulnScanner) checkSQLiDetail(lower string) *types.ScanResult {
 	for _, re := range s.sqliPatterns {
 		if re.MatchString(lower) {
-			return true, fmt.Sprintf("vuln_scan: SQL injection detected (pattern: %s)", re.String())
+			return &types.ScanResult{
+				Scanner:      "vuln",
+				RuleID:       "sqli",
+				Description:  fmt.Sprintf("vuln_scan: SQL injection detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
+	}
+	return nil
+}
+
+func (s *VulnScanner) checkSQLi(lower string) (bool, string) {
+	result := s.checkSQLiDetail(lower)
+	if result != nil {
+		return true, result.Description
 	}
 	return false, ""
 }
@@ -179,7 +207,7 @@ func (s *VulnScanner) compileSSRFNets() {
 	}
 }
 
-func (s *VulnScanner) checkSSRF(params string) (bool, string) {
+func (s *VulnScanner) checkSSRFDetail(params string) *types.ScanResult {
 	// Extract URLs from the decoded params
 	urls := extractURLsFromText(params)
 	for _, rawURL := range urls {
@@ -192,7 +220,15 @@ func (s *VulnScanner) checkSSRF(params string) (bool, string) {
 		scheme := strings.ToLower(u.Scheme)
 		if scheme != "" && scheme != "http" && scheme != "https" {
 			if scheme == "file" || scheme == "gopher" || scheme == "dict" || scheme == "ftp" {
-				return true, fmt.Sprintf("vuln_scan: SSRF detected — disallowed scheme %q", scheme)
+				return &types.ScanResult{
+					Scanner:      "vuln",
+					RuleID:       "ssrf",
+					Description:  fmt.Sprintf("vuln_scan: SSRF detected — disallowed scheme %q", scheme),
+					MatchExcerpt: types.TruncateExcerpt(scheme),
+					Confidence:   "high",
+					Blocked:      true,
+					Metadata:     make(map[string]string),
+				}
 			}
 		}
 
@@ -203,7 +239,15 @@ func (s *VulnScanner) checkSSRF(params string) (bool, string) {
 
 		// Cloud metadata endpoints
 		if host == "169.254.169.254" || host == "metadata.google.internal" {
-			return true, "vuln_scan: SSRF detected — cloud metadata endpoint"
+			return &types.ScanResult{
+				Scanner:      "vuln",
+				RuleID:       "ssrf",
+				Description:  "vuln_scan: SSRF detected — cloud metadata endpoint",
+				MatchExcerpt: types.TruncateExcerpt(host),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
 
 		// Private IP check
@@ -211,20 +255,52 @@ func (s *VulnScanner) checkSSRF(params string) (bool, string) {
 		if ip != nil {
 			for _, network := range s.ssrfNets {
 				if network.Contains(ip) {
-					return true, fmt.Sprintf("vuln_scan: SSRF detected — private/internal IP %s", host)
+					return &types.ScanResult{
+						Scanner:      "vuln",
+						RuleID:       "ssrf",
+						Description:  fmt.Sprintf("vuln_scan: SSRF detected — private/internal IP %s", host),
+						MatchExcerpt: types.TruncateExcerpt(host),
+						Confidence:   "high",
+						Blocked:      true,
+						Metadata:     make(map[string]string),
+					}
 				}
 			}
 		}
 
 		// Decimal IP (e.g., http://2130706433 = 127.0.0.1)
 		if isDecimalIP(host) {
-			return true, "vuln_scan: SSRF detected — decimal IP encoding"
+			return &types.ScanResult{
+				Scanner:      "vuln",
+				RuleID:       "ssrf",
+				Description:  "vuln_scan: SSRF detected — decimal IP encoding",
+				MatchExcerpt: types.TruncateExcerpt(host),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
 
 		// Hex IP (e.g., http://0x7f000001 = 127.0.0.1)
 		if strings.HasPrefix(strings.ToLower(host), "0x") {
-			return true, "vuln_scan: SSRF detected — hex IP encoding"
+			return &types.ScanResult{
+				Scanner:      "vuln",
+				RuleID:       "ssrf",
+				Description:  "vuln_scan: SSRF detected — hex IP encoding",
+				MatchExcerpt: types.TruncateExcerpt(host),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
+	}
+	return nil
+}
+
+func (s *VulnScanner) checkSSRF(params string) (bool, string) {
+	result := s.checkSSRFDetail(params)
+	if result != nil {
+		return true, result.Description
 	}
 	return false, ""
 }
@@ -247,18 +323,42 @@ func (s *VulnScanner) compilePathPatterns() {
 	s.pathPatterns = compilePatterns(patterns)
 }
 
-func (s *VulnScanner) checkPathTraversal(params, lower string) (bool, string) {
+func (s *VulnScanner) checkPathTraversalDetail(params, lower string) *types.ScanResult {
 	for _, re := range s.pathPatterns {
 		if re.MatchString(params) || re.MatchString(lower) {
-			return true, fmt.Sprintf("vuln_scan: path traversal detected (pattern: %s)", re.String())
+			return &types.ScanResult{
+				Scanner:      "vuln",
+				RuleID:       "path_traversal",
+				Description:  fmt.Sprintf("vuln_scan: path traversal detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
 	}
 
 	// Check for null bytes in raw string (already decoded from JSON)
 	if strings.Contains(params, "\x00") {
-		return true, "vuln_scan: path traversal detected — null byte in path"
+		return &types.ScanResult{
+			Scanner:      "vuln",
+			RuleID:       "path_traversal",
+			Description:  "vuln_scan: path traversal detected — null byte in path",
+			MatchExcerpt: "null byte",
+			Confidence:   "high",
+			Blocked:      true,
+			Metadata:     make(map[string]string),
+		}
 	}
 
+	return nil
+}
+
+func (s *VulnScanner) checkPathTraversal(params, lower string) (bool, string) {
+	result := s.checkPathTraversalDetail(params, lower)
+	if result != nil {
+		return true, result.Description
+	}
 	return false, ""
 }
 
@@ -284,11 +384,27 @@ func (s *VulnScanner) compileCmdPatterns() {
 	s.cmdPatterns = compilePatterns(patterns)
 }
 
-func (s *VulnScanner) checkCommandInjection(params string) (bool, string) {
+func (s *VulnScanner) checkCommandInjectionDetail(params string) *types.ScanResult {
 	for _, re := range s.cmdPatterns {
 		if re.MatchString(params) {
-			return true, fmt.Sprintf("vuln_scan: command injection detected (pattern: %s)", re.String())
+			return &types.ScanResult{
+				Scanner:      "vuln",
+				RuleID:       "command_injection",
+				Description:  fmt.Sprintf("vuln_scan: command injection detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
+	}
+	return nil
+}
+
+func (s *VulnScanner) checkCommandInjection(params string) (bool, string) {
+	result := s.checkCommandInjectionDetail(params)
+	if result != nil {
+		return true, result.Description
 	}
 	return false, ""
 }
@@ -320,11 +436,27 @@ func (s *VulnScanner) compileXSSPatterns() {
 	s.xssPatterns = compilePatterns(patterns)
 }
 
-func (s *VulnScanner) checkXSS(lower string) (bool, string) {
+func (s *VulnScanner) checkXSSDetail(lower string) *types.ScanResult {
 	for _, re := range s.xssPatterns {
 		if re.MatchString(lower) {
-			return true, fmt.Sprintf("vuln_scan: XSS detected (pattern: %s)", re.String())
+			return &types.ScanResult{
+				Scanner:      "vuln",
+				RuleID:       "xss",
+				Description:  fmt.Sprintf("vuln_scan: XSS detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
+	}
+	return nil
+}
+
+func (s *VulnScanner) checkXSS(lower string) (bool, string) {
+	result := s.checkXSSDetail(lower)
+	if result != nil {
+		return true, result.Description
 	}
 	return false, ""
 }

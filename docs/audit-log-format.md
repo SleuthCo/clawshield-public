@@ -18,6 +18,13 @@ Each row represents a single access decision (allow/deny/redacted).
 | `decision` | TEXT | One of: `allow`, `deny`, `redacted` |
 | `reason` | TEXT | Human-readable reason for decision |
 | `policy_version` | TEXT | Version of policy that governed this decision |
+| `scanner_type` | TEXT | Scanner that triggered the decision (`vuln`, `injection`, `malware`, `secrets`, `pii`, or empty for policy engine) |
+| `correlation_id` | TEXT | Bridge/integration correlation ID |
+| `classification` | TEXT | Data classification: `PUBLIC`, `INTERNAL`, `CONFIDENTIAL`, `RESTRICTED` |
+| `source` | TEXT | Request source: `forge-bridge`, `direct`, `slack`, `telegram` |
+| `response_blocked` | INTEGER | Whether the response (not request) was blocked (0/1) |
+| `agent_name` | TEXT | Agent identity from `X-Agent-Name` header |
+| `decision_details` | JSON | Structured forensic detail (see [Decision Explainability](#decision-explainability) below) |
 
 ### `tool_calls`
 Stores full request and response payloads linked to a decision.
@@ -99,12 +106,78 @@ Sensitive fields (e.g., API keys, tokens) are identified by key name and replace
 - `phone`
 - `ssn`
 
+## Decision Explainability
+
+Every deny/redact decision includes a structured `decision_details` JSON blob that captures exactly *why* the decision was made, enabling SOC analysts to investigate without reproducing the evaluation.
+
+### `DecisionDetail` Structure
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pipeline_stage` | string | Where in the evaluation pipeline the decision was made: `denylist`, `allowlist`, `arg_filter`, `domain_allowlist`, `vuln_scan`, `injection_scan`, `secrets_scan`, `pii_scan`, `malware_scan`, `default_action`, `timeout`, `parse_error`, `duplicate_keys` |
+| `eval_duration_ms` | float | Wall-clock evaluation time in milliseconds |
+| `scan_results` | array | Per-scanner forensic details (see below). Only populated for scanner-triggered decisions |
+| `active_overrides` | array | Adaptive overrides in effect at decision time (e.g., `"sensitivity_override:high"`, `"default_action_override:deny"`) |
+
+### `ScanResult` Structure
+
+Each entry in `scan_results` captures what a specific scanner found:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `scanner` | string | Scanner name: `vuln`, `injection`, `malware`, `secrets`, `pii` |
+| `rule_id` | string | Stable machine-readable rule identifier (see table below) |
+| `description` | string | Human-readable explanation of what was detected |
+| `match_excerpt` | string | Safely truncated/redacted excerpt of matched content. **Secrets and PII are redacted** (e.g., `AKIA****LE`) — full values are never stored |
+| `confidence` | string | Detection confidence: `high`, `medium`, `low` |
+| `blocked` | boolean | Whether this scanner result caused a deny decision |
+| `metadata` | object | Scanner-specific key-value pairs (e.g., entropy score, CIDR block) |
+
+### Rule IDs by Scanner
+
+| Scanner | Rule IDs |
+|---------|----------|
+| `vuln` | `sqli`, `ssrf`, `path_traversal`, `command_injection`, `xss` |
+| `injection` | `role_override`, `instruction_injection`, `encoding_attack`, `delimiter_injection`, `canary_leak` |
+| `malware` | `executable_magic`, `high_entropy`, `script_detection`, `signature_match`, `zip_bomb`, `gzip_bomb` |
+| `secrets` | `aws_access_key_id`, `github_personal_access_token`, `stripe_api_key`, `jwt_token`, `private_key`, etc. |
+| `pii` | `email_address`, `phone_number`, `social_security_number`, `credit_card_number`, `ip_address` |
+
+### Example Decision Detail
+
+```json
+{
+  "pipeline_stage": "vuln_scan",
+  "eval_duration_ms": 1.23,
+  "scan_results": [
+    {
+      "scanner": "vuln",
+      "rule_id": "sqli",
+      "description": "vuln_scan: SQL injection detected (pattern: OR\\s+1\\s*=\\s*1)",
+      "match_excerpt": "OR\\s+1\\s*=\\s*1",
+      "confidence": "high",
+      "blocked": true
+    }
+  ],
+  "active_overrides": ["sensitivity_override:high"]
+}
+```
+
+### Security Properties
+
+- **Match excerpts are truncated** to 100 characters maximum to prevent large payloads in audit logs
+- **Secrets and PII excerpts are redacted** — only first 4 and last 2 characters shown (e.g., `ghp_****yz`)
+- **DecisionDetail never appears in client-facing error responses** — only stored server-side in audit logs
+- **UTF-8 safe** — truncation operates on rune boundaries to prevent invalid strings
+
 ## Query Interface
 
 The `clawshield-audit` CLI allows querying logs by:
 - Time range (`--from`, `--to`)
 - Decision type (`--decision allow|deny|redacted`)
 - Tool name (`--tool file.read`)
+- Scanner type (`--scanner vuln|injection|malware|secrets|pii`)
+- Rule ID (`--rule-id sqli|ssrf|...`) — forensic filtering by specific detection rule
 - Argument patterns (partial hash match or regex on redacted args)
 
 Output formats: JSON, CSV, human-readable.

@@ -27,7 +27,8 @@ func createSchema(t *testing.T, db *sql.DB) {
 		correlation_id TEXT,
 		classification TEXT,
 		source TEXT,
-		response_blocked INTEGER DEFAULT 0
+		response_blocked INTEGER DEFAULT 0,
+		decision_details JSON
 	);
 
 	CREATE TABLE IF NOT EXISTS integrity_checkpoints (

@@ -35,7 +35,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 		correlation_id TEXT,
 		classification TEXT,
 		source TEXT,
-		response_blocked INTEGER DEFAULT 0
+		response_blocked INTEGER DEFAULT 0,
+		decision_details JSON
 	);
 	
 	CREATE TABLE IF NOT EXISTS tool_calls (

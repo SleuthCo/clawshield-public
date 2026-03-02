@@ -110,6 +110,53 @@ Destination for audit log output:
 5. For matching selectors, apply redaction per `redact_patterns`
 6. Log decision to audit output based on `audit` settings
 
+## Scanner Configuration & Integration
+
+ClawShield uses a multi-stage scanning pipeline to detect and prevent security threats. Each scanner operates independently and produces structured forensic audit records.
+
+### Scanner Pipeline Order
+
+Scanners are evaluated in the following order during policy evaluation:
+
+1. **denylist** — Tool/domain blocklist (first check, fastest)
+2. **allowlist** — Tool/domain allowlist
+3. **arg_filter** — Argument redaction via selectors and patterns
+4. **domain_allowlist** — Network egress control
+5. **vuln_scan** — Vulnerability scanning (SQL injection, SSRF, path traversal, etc.)
+6. **injection_scan** — Prompt injection detection
+7. **secrets_scan** — Credential and API key detection
+8. **pii_scan** — Personally identifiable information detection
+9. **default_action** — Final allow/deny if no scanner matched
+
+### ScanResult & Decision Details
+
+Each scanner that produces a match generates a `ScanResult` containing:
+
+| Field | Description |
+|-------|-------------|
+| `scanner` | Name of the scanner that fired (e.g., `injection_scan`, `secrets_scan`) |
+| `rule_id` | Specific rule identifier that matched (e.g., `sqli`, `jwt_token`) |
+| `action` | Decision (`allow`, `block`, `redact`) |
+| `confidence` | Confidence level: `low`, `medium`, `high` |
+| `matched_excerpt` | Safely redacted excerpt of the detected content (context without exposing the full secret/sensitive value) |
+
+All `ScanResult` records are collected into a `decision_details` JSON blob and recorded in the audit log, providing complete forensic traceability for every deny or redact decision.
+
+### Scanner Configuration
+
+Each scanner is configured in the policy YAML under its own section (`pii_scan`, `secrets_scan`, `injection_scan`, `vuln_scan`). Common configuration options across scanners include:
+
+- **`enabled` (boolean)** — Enable or disable the scanner
+- **`action` (string)** — Default action when a match is detected: `block`, `redact`, or `allow`
+- **`rules` (array of strings)** — Specific rules/categories to enable. Empty means all available rules
+- **`exclude_tools` (array of strings)** — Tools to exempt from scanning
+
+The `decision_details` field in the audit log contains the complete results from all scanners that evaluated the request, making it easy to:
+- Audit which rule triggered a decision
+- Extract rule IDs for forensic analysis
+- View confidence levels for tuning thresholds
+- Understand the exact match context (via redacted excerpts)
+
 ### `pii_scan`
 
 Detects Personally Identifiable Information (PII) in tool arguments and responses by matching value patterns — email addresses, phone numbers, SSNs, credit card numbers, IP addresses, and more.

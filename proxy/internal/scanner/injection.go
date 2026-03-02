@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/SleuthCo/clawshield/shared/types"
 )
 
 // InjectionSensitivity controls heuristic thresholds.
@@ -82,61 +84,231 @@ func NewInjectionDetector(cfg *PromptInjectionConfig) *InjectionDetector {
 	return d
 }
 
-// ScanRequest checks outbound tool arguments for prompt injection attempts.
-func (d *InjectionDetector) ScanRequest(method string, params string) (bool, string) {
+// ScanRequestDetail checks outbound tool arguments for prompt injection attempts.
+// Returns a *types.ScanResult if an injection is detected, nil otherwise.
+func (d *InjectionDetector) ScanRequestDetail(method string, params string) *types.ScanResult {
 	if d == nil || !d.scanRequests {
-		return false, ""
+		return nil
 	}
 
 	lower := strings.ToLower(params)
 
-	// Tier 1: heuristic patterns
-	if blocked, reason := d.checkHeuristicPatterns(lower); blocked {
-		return true, reason
+	// Tier 1: role override heuristics
+	for _, re := range d.roleOverridePatterns {
+		if re.MatchString(lower) {
+			return &types.ScanResult{
+				Scanner:      "injection",
+				RuleID:       "role_override",
+				Description:  fmt.Sprintf("prompt_injection: role override attempt detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
+		}
+	}
+
+	// Tier 1: instruction injection heuristics
+	for _, re := range d.instructionPatterns {
+		if re.MatchString(lower) {
+			return &types.ScanResult{
+				Scanner:      "injection",
+				RuleID:       "instruction_injection",
+				Description:  fmt.Sprintf("prompt_injection: instruction injection detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
+		}
+	}
+
+	// Tier 2: encoding attack patterns
+	for _, re := range d.encodingPatterns {
+		if re.MatchString(lower) {
+			return &types.ScanResult{
+				Scanner:      "injection",
+				RuleID:       "encoding_attack",
+				Description:  fmt.Sprintf("prompt_injection: encoding attack detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
+		}
+	}
+
+	// Tier 2: delimiter injection patterns
+	for _, re := range d.delimiterPatterns {
+		if re.MatchString(lower) {
+			return &types.ScanResult{
+				Scanner:      "injection",
+				RuleID:       "delimiter_injection",
+				Description:  fmt.Sprintf("prompt_injection: delimiter injection detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
+		}
 	}
 
 	// Tier 2: structural analysis (medium/high sensitivity only)
 	if d.sensitivity != SensitivityLow {
 		if blocked, reason := d.checkStructuralRequest(params); blocked {
-			return true, reason
+			// Map structural reasons to rule IDs
+			ruleID := "structural_injection"
+			if strings.Contains(reason, "base64") {
+				ruleID = "base64_injection"
+			} else if strings.Contains(reason, "imperative") {
+				ruleID = "imperative_density"
+			}
+			return &types.ScanResult{
+				Scanner:      "injection",
+				RuleID:       ruleID,
+				Description:  reason,
+				MatchExcerpt: types.TruncateExcerpt(params[:min(len(params), 100)]),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
 	}
 
+	return nil
+}
+
+// ScanRequest checks outbound tool arguments for prompt injection attempts.
+func (d *InjectionDetector) ScanRequest(method string, params string) (bool, string) {
+	result := d.ScanRequestDetail(method, params)
+	if result != nil {
+		return true, result.Description
+	}
 	return false, ""
 }
 
-// ScanResponse checks inbound tool responses for prompt injection attempts.
-// The method parameter identifies which tool produced the response (for trusted tool bypass).
-func (d *InjectionDetector) ScanResponse(method string, responseBody string) (bool, string) {
+// ScanResponseDetail checks inbound tool responses for prompt injection attempts.
+// Returns a *types.ScanResult if an injection is detected, nil otherwise.
+func (d *InjectionDetector) ScanResponseDetail(method string, responseBody string) *types.ScanResult {
 	if d == nil || !d.scanResponses {
-		return false, ""
+		return nil
 	}
 
 	if d.trustedResponseTools[method] {
-		return false, ""
+		return nil
 	}
 
 	lower := strings.ToLower(responseBody)
 
-	// Tier 1: heuristic patterns
-	if blocked, reason := d.checkHeuristicPatterns(lower); blocked {
-		return true, fmt.Sprintf("prompt_injection_response: %s", reason)
+	// Tier 1: role override heuristics
+	for _, re := range d.roleOverridePatterns {
+		if re.MatchString(lower) {
+			return &types.ScanResult{
+				Scanner:      "injection",
+				RuleID:       "role_override",
+				Description:  fmt.Sprintf("prompt_injection_response: role override attempt detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
+		}
+	}
+
+	// Tier 1: instruction injection heuristics
+	for _, re := range d.instructionPatterns {
+		if re.MatchString(lower) {
+			return &types.ScanResult{
+				Scanner:      "injection",
+				RuleID:       "instruction_injection",
+				Description:  fmt.Sprintf("prompt_injection_response: instruction injection detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
+		}
+	}
+
+	// Tier 2: encoding attack patterns
+	for _, re := range d.encodingPatterns {
+		if re.MatchString(lower) {
+			return &types.ScanResult{
+				Scanner:      "injection",
+				RuleID:       "encoding_attack",
+				Description:  fmt.Sprintf("prompt_injection_response: encoding attack detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
+		}
+	}
+
+	// Tier 2: delimiter injection patterns
+	for _, re := range d.delimiterPatterns {
+		if re.MatchString(lower) {
+			return &types.ScanResult{
+				Scanner:      "injection",
+				RuleID:       "delimiter_injection",
+				Description:  fmt.Sprintf("prompt_injection_response: delimiter injection detected (pattern: %s)", re.String()),
+				MatchExcerpt: types.TruncateExcerpt(re.String()),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
+		}
 	}
 
 	// Tier 2: structural analysis
 	if d.sensitivity != SensitivityLow {
 		if blocked, reason := d.checkStructuralResponse(responseBody); blocked {
-			return true, reason
+			// Map structural reasons to rule IDs
+			ruleID := "structural_injection"
+			if strings.Contains(reason, "base64") {
+				ruleID = "base64_injection"
+			} else if strings.Contains(reason, "imperative") {
+				ruleID = "imperative_density"
+			} else if strings.Contains(reason, "entropy") {
+				ruleID = "high_entropy"
+			}
+			return &types.ScanResult{
+				Scanner:      "injection",
+				RuleID:       ruleID,
+				Description:  reason,
+				MatchExcerpt: types.TruncateExcerpt(responseBody[:min(len(responseBody), 100)]),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
 	}
 
 	// Tier 3: canary token leak detection
 	if d.canaryTokens && d.activeCanary != "" {
 		if strings.Contains(responseBody, d.activeCanary) {
-			return true, "prompt_injection_response: canary token leaked — cross-tool data exfiltration detected"
+			return &types.ScanResult{
+				Scanner:      "injection",
+				RuleID:       "canary_leak",
+				Description:  "prompt_injection_response: canary token leaked — cross-tool data exfiltration detected",
+				MatchExcerpt: types.TruncateExcerpt(d.activeCanary),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
 		}
 	}
 
+	return nil
+}
+
+// ScanResponse checks inbound tool responses for prompt injection attempts.
+// The method parameter identifies which tool produced the response (for trusted tool bypass).
+func (d *InjectionDetector) ScanResponse(method string, responseBody string) (bool, string) {
+	result := d.ScanResponseDetail(method, responseBody)
+	if result != nil {
+		return true, result.Description
+	}
 	return false, ""
 }
 
@@ -392,4 +564,12 @@ func generateCanary() string {
 		return ""
 	}
 	return fmt.Sprintf("__clawshield_canary_%x__", buf)
+}
+
+// min returns the minimum of two integers.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
