@@ -110,6 +110,63 @@ Destination for audit log output:
 5. For matching selectors, apply redaction per `redact_patterns`
 6. Log decision to audit output based on `audit` settings
 
+### `secrets_scan`
+
+Detects leaked credentials and secrets in tool arguments and responses by matching value patterns — AWS access keys, GitHub tokens, Stripe keys, JWTs, private keys, database connection strings, and more.
+
+Unlike key-name-based redaction (which only catches secrets in well-named fields like `api_key`), secrets scanning detects credentials regardless of which JSON field they appear in.
+
+#### `enabled` (boolean)
+
+Enable or disable secrets scanning.
+
+#### `scan_requests` (boolean)
+
+Scan outbound tool arguments for secrets. Catches credentials being sent to tools.
+
+#### `scan_responses` (boolean)
+
+Scan inbound tool responses for secrets. Catches credentials leaked in tool outputs.
+
+#### `action` (string)
+
+What to do when a secret is detected:
+- `block` (default): Deny the request/response entirely
+- `redact`: Replace the detected secret with `[REDACTED]` and allow the message through
+
+#### `rules` (array of strings)
+
+Which rule categories to enable. Empty = all categories. Available categories:
+
+| Category | Detects |
+|----------|---------|
+| `aws` | AWS access keys, secret keys, session tokens |
+| `gcp` | GCP API keys, service account JSON, OAuth client IDs |
+| `azure` | Azure storage keys, AD client secrets |
+| `github` | GitHub PATs, OAuth tokens, app tokens, fine-grained tokens |
+| `gitlab` | GitLab personal access tokens, pipeline tokens |
+| `slack` | Slack bot/user tokens, webhook URLs |
+| `stripe` | Stripe secret and restricted API keys |
+| `atlassian` | Atlassian/Jira/Confluence API tokens |
+| `jwt` | JSON Web Tokens |
+| `private_key` | RSA, EC, OpenSSH, PGP, PKCS#8 private keys |
+| `database` | PostgreSQL, MySQL, MongoDB, Redis connection strings with credentials |
+| `generic_api` | SendGrid, Twilio, Mailgun, NPM, PyPI, Heroku, Datadog keys, generic bearer tokens |
+
+#### `exclude_tools` (array of strings)
+
+Tools exempt from secrets scanning (e.g., `vault.read`, `secrets.get`).
+
+#### `custom_patterns` (array of objects)
+
+User-defined secret detection patterns:
+
+```yaml
+custom_patterns:
+  - name: "Internal Service Token"
+    pattern: "intl_svc_[a-zA-Z0-9]{32}"
+    description: "internal service-to-service token"
+```
 ### `adaptive`
 
 Configures cross-layer adaptive security responses. When enabled, security events from one layer (e.g., eBPF detecting privilege escalation) automatically trigger defensive responses in other layers (e.g., proxy elevating injection sensitivity).
@@ -156,6 +213,21 @@ Each rule defines a trigger condition and an automatic response action.
 **Example:**
 
 ```yaml
+secrets_scan:
+  enabled: true
+  scan_requests: true
+  scan_responses: true
+  action: block
+  rules:
+    - aws
+    - github
+    - stripe
+    - jwt
+    - private_key
+    - database
+  exclude_tools:
+    - vault.read
+    - secrets.get
 adaptive:
   enabled: true
   socket_path: /tmp/clawshield-events.sock

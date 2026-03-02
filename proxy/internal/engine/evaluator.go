@@ -30,6 +30,7 @@ type Policy struct {
 	VulnScan        *scanner.VulnScanConfig        `yaml:"vuln_scan"`
 	PromptInjection *scanner.PromptInjectionConfig  `yaml:"prompt_injection"`
 	MalwareScan     *scanner.MalwareScanConfig      `yaml:"malware_scan"`
+	SecretsScan     *scanner.SecretsConfig           `yaml:"secrets_scan"`
 
 	// OpenClaw gateway integration
 	OpenClaw *OpenClawConfig `yaml:"openclaw"`
@@ -59,6 +60,7 @@ type Evaluator struct {
 	vulnScanner        *scanner.VulnScanner
 	injectionDetector  *scanner.InjectionDetector
 	malwareScanner     *scanner.MalwareScanner
+	secretsScanner     *scanner.SecretsScanner
 
 	// Dynamic overrides set by the adaptive controller (cross-layer integration).
 	// These are thread-safe and expire automatically.
@@ -88,6 +90,7 @@ func NewEvaluator(policy *Policy) *Evaluator {
 	e.vulnScanner = scanner.NewVulnScanner(policy.VulnScan)
 	e.injectionDetector = scanner.NewInjectionDetector(policy.PromptInjection)
 	e.malwareScanner = scanner.NewMalwareScanner(policy.MalwareScan)
+	e.secretsScanner = scanner.NewSecretsScanner(policy.SecretsScan)
 
 	return e
 }
@@ -105,6 +108,11 @@ func (e *Evaluator) InjectionDetector() *scanner.InjectionDetector {
 // MalwareScanner returns the malware scanner (may be nil if disabled).
 func (e *Evaluator) MalwareScanner() *scanner.MalwareScanner {
 	return e.malwareScanner
+}
+
+// SecretsScanner returns the secrets scanner (may be nil if disabled).
+func (e *Evaluator) SecretsScanner() *scanner.SecretsScanner {
+	return e.secretsScanner
 }
 
 // AgentAllowlist returns the configured agent allowlist from OpenClaw policy.
@@ -263,6 +271,19 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 		}
 	}
 
+	// Secrets scanning on request arguments
+	if e.secretsScanner != nil {
+		select {
+		case <-ctx.Done():
+			return Deny, "evaluation timeout exceeded"
+		default:
+		}
+		decoded := decodeJSONStrings(rpc.Params)
+		if blocked, reason := e.secretsScanner.ScanRequest(rpc.Method, decoded); blocked {
+			return Deny, reason
+		}
+	}
+
 	// If method was explicitly in the allowlist and passed all security scans, allow it
 	if inAllowlist {
 		return Allow, "tool in allowlist, scans passed"
@@ -302,6 +323,13 @@ func (e *Evaluator) EvaluateResponse(ctx context.Context, method string, respons
 	// Malware scanning
 	if e.malwareScanner != nil {
 		if blocked, reason := e.malwareScanner.ScanResponse(responseBody); blocked {
+			return Deny, reason
+		}
+	}
+
+	// Secrets scanning on responses (detect leaked credentials)
+	if e.secretsScanner != nil {
+		if blocked, reason := e.secretsScanner.ScanResponse(method, responseBody); blocked {
 			return Deny, reason
 		}
 	}
