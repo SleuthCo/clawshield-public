@@ -30,8 +30,61 @@ import (
 	"github.com/SleuthCo/clawshield/proxy/internal/audit/sqlite"
 	"github.com/SleuthCo/clawshield/proxy/internal/engine"
 	"github.com/SleuthCo/clawshield/proxy/internal/metrics"
+	"github.com/SleuthCo/clawshield/shared/bus"
 	"github.com/SleuthCo/clawshield/shared/types"
 )
+
+// wsRateLimiter tracks WebSocket connection counts per source IP to prevent
+// resource exhaustion attacks via rapid connection cycling.
+type wsRateLimiter struct {
+	mu       sync.Mutex
+	counts   map[string]int
+	maxConns int
+}
+
+func newWSRateLimiter(maxConnsPerIP int) *wsRateLimiter {
+	if maxConnsPerIP <= 0 {
+		maxConnsPerIP = 10
+	}
+	rl := &wsRateLimiter{
+		counts:   make(map[string]int),
+		maxConns: maxConnsPerIP,
+	}
+	// Periodic cleanup of stale entries every 60 seconds
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			rl.mu.Lock()
+			for k, v := range rl.counts {
+				if v <= 0 {
+					delete(rl.counts, k)
+				}
+			}
+			rl.mu.Unlock()
+		}
+	}()
+	return rl
+}
+
+func (rl *wsRateLimiter) acquire(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if rl.counts[ip] >= rl.maxConns {
+		return false
+	}
+	rl.counts[ip]++
+	return true
+}
+
+func (rl *wsRateLimiter) release(ip string) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.counts[ip]--
+	if rl.counts[ip] <= 0 {
+		delete(rl.counts, ip)
+	}
+}
 
 // httpProxy runs ClawShield as an HTTP/WebSocket reverse proxy in front of
 // an OpenClaw gateway (or any HTTP-based tool server).
@@ -50,6 +103,7 @@ type httpProxy struct {
 	controlUIDir   string
 	metrics        *metrics.Collector
 	eventBus       *bus.EventBus // Cross-layer event bus (nil if not configured)
+	wsLimiter      *wsRateLimiter
 }
 
 // runHTTPProxy starts the HTTP reverse proxy mode.
@@ -85,6 +139,7 @@ func runHTTPProxy(cfg *engine.Policy, evaluator *engine.Evaluator, auditWriter *
 		controlUIDir:   controlUIDir,
 		metrics:        metrics.New(),
 		eventBus:       eventBus,
+		wsLimiter:      newWSRateLimiter(10), // Max 10 concurrent WS connections per IP
 	}
 
 	mux := http.NewServeMux()
@@ -152,12 +207,47 @@ func (p *httpProxy) standaloneRootHandler(w http.ResponseWriter, r *http.Request
 }
 
 // handler dispatches to WebSocket or HTTP reverse proxy based on upgrade headers.
+// SECURITY: Validates the Host header to prevent DNS rebinding attacks where a
+// malicious website's DNS resolves to localhost, allowing browser-based SSRF.
 func (p *httpProxy) handler(w http.ResponseWriter, r *http.Request) {
+	// Host header validation — reject requests with unexpected Host values
+	if !p.isValidHost(r.Host) {
+		log.Printf("BLOCKED: invalid Host header %q from %s", r.Host, r.RemoteAddr)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
 	if isWebSocketUpgrade(r) {
 		p.handleWebSocket(w, r)
 		return
 	}
 	p.handleHTTP(w, r)
+}
+
+// isValidHost checks if the Host header matches the expected proxy listen address.
+// This prevents DNS rebinding attacks where an attacker's domain resolves to
+// 127.0.0.1, allowing a malicious browser page to send requests to the proxy.
+func (p *httpProxy) isValidHost(host string) bool {
+	// Strip port if present
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		h = host // No port in Host header
+	}
+
+	// Allow localhost variants (the proxy always listens on loopback)
+	allowedHosts := []string{"localhost", "127.0.0.1", "::1", ""}
+	for _, allowed := range allowedHosts {
+		if strings.EqualFold(h, allowed) {
+			return true
+		}
+	}
+
+	// Allow the gateway's own hostname (for reverse proxy setups)
+	if p.gatewayURL != nil && strings.EqualFold(h, p.gatewayURL.Hostname()) {
+		return true
+	}
+
+	return false
 }
 
 // handleHTTP forwards non-WebSocket requests via a standard reverse proxy.
@@ -397,6 +487,21 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 // handleWebSocket upgrades the client connection and the upstream connection,
 // then bidirectionally proxies messages with policy evaluation on each frame.
 func (p *httpProxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// SECURITY: Rate-limit WebSocket connections per source IP to prevent
+	// resource exhaustion via rapid connection cycling.
+	clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+	if p.wsLimiter != nil && !p.wsLimiter.acquire(clientIP) {
+		log.Printf("BLOCKED: WebSocket rate limit exceeded for IP %s", clientIP)
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+		return
+	}
+	if p.wsLimiter != nil {
+		defer p.wsLimiter.release(clientIP)
+	}
+
 	// Build upstream URL
 	upstreamURL := *p.gatewayURL
 	if upstreamURL.Scheme == "https" {
@@ -847,13 +952,18 @@ func (p *httpProxy) logDecision(method, params, decision, reason string) {
 }
 
 // sendErrorFrame sends a JSON-RPC error frame back to the client.
+// SECURITY: The detailed deny reason is logged server-side but NOT sent to
+// the client — exposing policy internals (e.g. "tool not in allowlist",
+// "regex matched /etc/passwd") enables reconnaissance attacks.
 func (p *httpProxy) sendErrorFrame(ctx context.Context, conn *websocket.Conn, method, reason string) {
+	// Log the detailed reason server-side for debugging/audit
+	log.Printf("DENY DETAIL: method=%s reason=%s", method, reason)
+
 	errResp := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"error": map[string]interface{}{
 			"code":    -32600,
-			"message": "blocked by ClawShield security policy",
-			"data":    reason,
+			"message": "blocked by security policy",
 		},
 	}
 	if method != "" {

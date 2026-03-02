@@ -462,6 +462,64 @@ func TestGenerate_DuplicateDomains(t *testing.T) {
 	}
 }
 
+func TestGenerate_RejectsInjectionInDomainNames(t *testing.T) {
+	tests := []struct {
+		name   string
+		domain string
+	}{
+		{"shell injection semicolon", "example.com; rm -rf /"},
+		{"shell injection backtick", "example.com`whoami`"},
+		{"shell injection subshell", "example.com$(id)"},
+		{"newline injection", "example.com\nevil"},
+		{"flag injection", "-flag-injection"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				AllowedDomains: []string{tt.domain},
+				DNSResolvers:   []string{"8.8.8.8"},
+			}
+
+			_, err := Generate(cfg)
+			if err == nil {
+				t.Errorf("Generate() should reject domain %q, but succeeded", tt.domain)
+			}
+			if err != nil && !strings.Contains(err.Error(), "invalid domain name") {
+				t.Errorf("Expected 'invalid domain name' error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestGenerate_RejectsInvalidAllowedIPs(t *testing.T) {
+	cfg := Config{
+		AllowedDomains: []string{},
+		AllowedIPs:     []string{"not-an-ip; rm -rf /"},
+		DNSResolvers:   []string{"8.8.8.8"},
+	}
+
+	_, err := Generate(cfg)
+	if err == nil {
+		t.Error("Generate() should reject invalid IP in allowed_ips")
+	}
+	if err != nil && !strings.Contains(err.Error(), "invalid IP address") {
+		t.Errorf("Expected 'invalid IP address' error, got: %v", err)
+	}
+}
+
+func TestGenerate_AcceptsValidDomains(t *testing.T) {
+	cfg := Config{
+		AllowedDomains: []string{"example.com", "sub.example.com", "my-host.example.com"},
+		DNSResolvers:   []string{"8.8.8.8"},
+	}
+
+	_, err := Generate(cfg)
+	if err != nil {
+		t.Errorf("Generate() should accept valid domains, got: %v", err)
+	}
+}
+
 func TestGenerate_IPv6Addresses(t *testing.T) {
 	// Test with domains that might return IPv6
 	cfg := Config{

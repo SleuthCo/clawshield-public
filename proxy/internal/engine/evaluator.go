@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SleuthCo/clawshield/proxy/internal/scanner"
@@ -63,6 +64,13 @@ type Evaluator struct {
 	malwareScanner     *scanner.MalwareScanner
 	secretsScanner     *scanner.SecretsScanner
 	piiScanner         *scanner.PIIScanner
+
+	// Cross-layer adaptive override fields
+	overrideMu             sync.RWMutex
+	sensitivityOverride    string
+	sensitivityOverrideExp time.Time
+	defaultActionOverride    string
+	defaultActionOverrideExp time.Time
 }
 
 func NewEvaluator(policy *Policy) *Evaluator {
@@ -501,51 +509,111 @@ func (e *Evaluator) EvaluateOpenClawChannel(channel, tool string) (string, strin
 	return Allow, "tool not restricted for channel"
 }
 
-// hasDuplicateKeys checks for duplicate top-level keys in a JSON object.
-// This prevents parser differential attacks where Go takes the last key
-// but other languages take the first.
+// hasDuplicateKeys recursively checks for duplicate keys at every level of a
+// JSON object tree. This prevents parser differential attacks where Go takes
+// the last key but other languages take the first — including in nested objects
+// like params, which the old top-level-only check missed.
 func hasDuplicateKeys(data []byte) bool {
+	var raw interface{}
+	// First do a quick decode to see if it's valid JSON at all
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	return hasDuplicateKeysRecursive(data)
+}
+
+// hasDuplicateKeysRecursive walks JSON tokens and checks every object level
+// for duplicate keys, recursing into nested objects and arrays.
+func hasDuplicateKeysRecursive(data []byte) bool {
 	dec := json.NewDecoder(strings.NewReader(string(data)))
+	return checkTokenStream(dec)
+}
+
+// checkTokenStream reads tokens from the decoder and checks for duplicate keys
+// at the current object nesting level, recursing into child objects/arrays.
+func checkTokenStream(dec *json.Decoder) bool {
 	t, err := dec.Token()
 	if err != nil {
 		return false
 	}
-	delim, ok := t.(json.Delim)
-	if !ok || delim != '{' {
-		return false
-	}
 
+	switch v := t.(type) {
+	case json.Delim:
+		if v == '{' {
+			return checkObject(dec)
+		}
+		if v == '[' {
+			return checkArray(dec)
+		}
+	}
+	return false
+}
+
+// checkObject checks for duplicate keys in a single JSON object and recurses
+// into any nested objects or arrays found in values.
+func checkObject(dec *json.Decoder) bool {
 	seen := make(map[string]bool)
-	depth := 0
 	for dec.More() {
-		t, err := dec.Token()
+		// Read key
+		keyTok, err := dec.Token()
 		if err != nil {
 			return false
 		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return false
+		}
+		if seen[key] {
+			return true
+		}
+		seen[key] = true
 
-		switch v := t.(type) {
-		case json.Delim:
-			switch v {
-			case '{', '[':
-				depth++
-			case '}', ']':
-				depth--
-			}
-		case string:
-			if depth == 0 {
-				// This is a top-level key
-				if seen[v] {
+		// Read value — peek to see if it's a nested object/array
+		valTok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		if delim, ok := valTok.(json.Delim); ok {
+			if delim == '{' {
+				if checkObject(dec) {
 					return true
 				}
-				seen[v] = true
-				// Skip the value
-				var skip json.RawMessage
-				if err := dec.Decode(&skip); err != nil {
-					return false
+			} else if delim == '[' {
+				if checkArray(dec) {
+					return true
 				}
 			}
 		}
+		// Primitive value — already consumed, continue
 	}
+	// Consume closing '}'
+	dec.Token() // nolint:errcheck
+	return false
+}
+
+// checkArray recurses into each element of a JSON array looking for duplicate
+// keys in any nested objects.
+func checkArray(dec *json.Decoder) bool {
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		if delim, ok := tok.(json.Delim); ok {
+			if delim == '{' {
+				if checkObject(dec) {
+					return true
+				}
+			} else if delim == '[' {
+				if checkArray(dec) {
+					return true
+				}
+			}
+		}
+		// Primitive element — already consumed
+	}
+	// Consume closing ']'
+	dec.Token() // nolint:errcheck
 	return false
 }
 
