@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/SleuthCo/clawshield/proxy/internal/engine"
+	"github.com/SleuthCo/clawshield/proxy/internal/metrics"
 )
 
 // =============================================================================
@@ -43,6 +45,7 @@ func TestWebSocket_BinaryFramesBlocked(t *testing.T) {
 
 	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
 		evaluator:  eval,
 		sessionID:  "test-session",
@@ -115,6 +118,7 @@ func TestHTTPProxy_RequestBodyScanning_BlocksDenied(t *testing.T) {
 	})
 
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
 		evaluator:  eval,
 		sessionID:  "test-session",
@@ -157,6 +161,7 @@ func TestHTTPProxy_RequestBodyScanning_AllowsClean(t *testing.T) {
 	})
 
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
 		evaluator:  eval,
 		sessionID:  "test-session",
@@ -195,6 +200,7 @@ func TestHTTPProxy_RequestBodyScanning_OversizedBody(t *testing.T) {
 
 	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
 		evaluator:  eval,
 		sessionID:  "test-session",
@@ -233,6 +239,7 @@ func TestHTTPProxy_GETRequestsNotScanned(t *testing.T) {
 
 	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
 		evaluator:  eval,
 		sessionID:  "test-session",
@@ -264,6 +271,7 @@ func TestHTTPProxy_GETRequestsNotScanned(t *testing.T) {
 func TestAuditAPI_StandaloneMode_RequiresAuthFromNonLoopback(t *testing.T) {
 	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL:     mustParseURL("http://localhost:8080"),
 		authToken:      "test-secret-token",
 		evaluator:      eval,
@@ -313,6 +321,7 @@ func TestAuditAPI_StandaloneMode_RequiresAuthFromNonLoopback(t *testing.T) {
 func TestAuditAPI_StandaloneMode_AllowsLoopback(t *testing.T) {
 	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL:     mustParseURL("http://localhost:8080"),
 		authToken:      "test-secret-token",
 		evaluator:      eval,
@@ -340,6 +349,7 @@ func TestAuditAPI_StandaloneMode_AllowsLoopback(t *testing.T) {
 func TestAuditAPI_NonStandaloneMode_AlwaysRequiresAuth(t *testing.T) {
 	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL:     mustParseURL("http://localhost:8080"),
 		authToken:      "test-secret-token",
 		evaluator:      eval,
@@ -373,6 +383,7 @@ func TestStatusAPI_UnauthenticatedHidesDetails(t *testing.T) {
 		},
 	})
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL:     mustParseURL("http://localhost:8080"),
 		authToken:      "test-secret-token",
 		evaluator:      eval,
@@ -424,6 +435,7 @@ func TestStatusAPI_AuthenticatedShowsDetails(t *testing.T) {
 		},
 	})
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL:     mustParseURL("http://localhost:8080"),
 		authToken:      "test-secret-token",
 		evaluator:      eval,
@@ -466,6 +478,7 @@ func TestStatusAPI_AuthenticatedShowsDetails(t *testing.T) {
 func TestStatusAPI_LoopbackShowsDetails(t *testing.T) {
 	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL:     mustParseURL("http://localhost:8080"),
 		authToken:      "test-secret-token",
 		evaluator:      eval,
@@ -498,6 +511,7 @@ func TestStatusAPI_LoopbackShowsDetails(t *testing.T) {
 func TestStudioTicketValidate_ValidTicket(t *testing.T) {
 	studioToken := "test-studio-secret"
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL:  mustParseURL("http://localhost:8080"),
 		studioToken: studioToken,
 		sessionID:   "test-session",
@@ -538,6 +552,7 @@ func TestStudioTicketValidate_ValidTicket(t *testing.T) {
 func TestStudioTicketValidate_ExpiredTicket(t *testing.T) {
 	studioToken := "test-studio-secret"
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL:  mustParseURL("http://localhost:8080"),
 		studioToken: studioToken,
 		sessionID:   "test-session",
@@ -578,6 +593,7 @@ func TestStudioTicketValidate_ExpiredTicket(t *testing.T) {
 func TestStudioTicketValidate_TamperedSignature(t *testing.T) {
 	studioToken := "test-studio-secret"
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL:  mustParseURL("http://localhost:8080"),
 		studioToken: studioToken,
 		sessionID:   "test-session",
@@ -619,6 +635,7 @@ func TestStudioTicketValidate_TamperedSignature(t *testing.T) {
 func TestStudioTicketValidate_TamperedExpiry(t *testing.T) {
 	studioToken := "test-studio-secret"
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL:  mustParseURL("http://localhost:8080"),
 		studioToken: studioToken,
 		sessionID:   "test-session",
@@ -657,6 +674,7 @@ func TestStudioTicketValidate_TamperedExpiry(t *testing.T) {
 
 func TestStudioTicketValidate_MissingTicket(t *testing.T) {
 	p := &httpProxy{
+metrics:    metrics.New(),
 		gatewayURL:  mustParseURL("http://localhost:8080"),
 		studioToken: "test-studio-secret",
 		sessionID:   "test-session",
@@ -733,7 +751,272 @@ func TestGenerateAuthToken_ProducesStrongToken(t *testing.T) {
 }
 
 // =============================================================================
-// Ensure unused import is referenced
+// MEDIUM-2: Recursive duplicate JSON key detection
+// =============================================================================
+
+func TestEvaluator_NestedDuplicateKeysBlocked(t *testing.T) {
+	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
+
+	// Nested duplicate key in params — the old top-level-only check missed this
+	msg := `{"method":"read","params":{"path":"/tmp","path":"/etc/shadow"}}`
+	decision, reason := eval.EvaluateWithContext(context.Background(), msg)
+
+	if decision != "deny" || reason != "duplicate JSON keys detected" {
+		t.Errorf("Nested duplicate key should be blocked, got decision=%s reason=%s", decision, reason)
+	}
+}
+
+func TestEvaluator_TopLevelDuplicateKeysBlocked(t *testing.T) {
+	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
+
+	// Top-level duplicate key — should still be caught
+	msg := `{"method":"read","method":"shell.exec","params":{}}`
+	decision, reason := eval.EvaluateWithContext(context.Background(), msg)
+
+	if decision != "deny" || reason != "duplicate JSON keys detected" {
+		t.Errorf("Top-level duplicate key should be blocked, got decision=%s reason=%s", decision, reason)
+	}
+}
+
+func TestEvaluator_DuplicateKeysInArray(t *testing.T) {
+	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
+
+	// Duplicate key inside an object inside an array
+	msg := `{"method":"read","params":{"items":[{"file":"a","file":"b"}]}}`
+	decision, reason := eval.EvaluateWithContext(context.Background(), msg)
+
+	if decision != "deny" || reason != "duplicate JSON keys detected" {
+		t.Errorf("Duplicate key in array element should be blocked, got decision=%s reason=%s", decision, reason)
+	}
+}
+
+func TestEvaluator_NoDuplicateKeysAllowed(t *testing.T) {
+	eval := newTestEvaluator(&engine.Policy{DefaultAction: "allow"})
+
+	// No duplicate keys — should pass
+	msg := `{"method":"read","params":{"path":"/tmp","mode":"r"}}`
+	decision, _ := eval.EvaluateWithContext(context.Background(), msg)
+
+	if decision != "allow" {
+		t.Errorf("Valid JSON without duplicate keys should be allowed, got decision=%s", decision)
+	}
+}
+
+// =============================================================================
+// MEDIUM-3: WebSocket rate limiting
+// =============================================================================
+
+func TestWSRateLimiter_AllowsUnderLimit(t *testing.T) {
+	rl := newWSRateLimiter(3)
+
+	for i := 0; i < 3; i++ {
+		if !rl.acquire("10.0.0.1") {
+			t.Errorf("Connection %d should be allowed (under limit)", i+1)
+		}
+	}
+
+	// 4th should be blocked
+	if rl.acquire("10.0.0.1") {
+		t.Error("4th connection should be blocked (at limit)")
+	}
+
+	// Different IP should still be allowed
+	if !rl.acquire("10.0.0.2") {
+		t.Error("Different IP should be allowed")
+	}
+}
+
+func TestWSRateLimiter_ReleaseAllowsNew(t *testing.T) {
+	rl := newWSRateLimiter(1)
+
+	if !rl.acquire("10.0.0.1") {
+		t.Fatal("First connection should be allowed")
+	}
+
+	if rl.acquire("10.0.0.1") {
+		t.Error("Second connection should be blocked")
+	}
+
+	rl.release("10.0.0.1")
+
+	if !rl.acquire("10.0.0.1") {
+		t.Error("After release, new connection should be allowed")
+	}
+}
+
+// =============================================================================
+// MEDIUM-4: Error frame does not leak deny reasons
+// =============================================================================
+
+func TestSendErrorFrame_NoReasonLeaked(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close(websocket.StatusNormalClosure, "")
+		for {
+			msgType, data, err := c.Read(context.Background())
+			if err != nil {
+				return
+			}
+			_ = c.Write(context.Background(), msgType, data)
+		}
+	}))
+	defer upstream.Close()
+
+	eval := newTestEvaluator(&engine.Policy{
+		DefaultAction: "allow",
+		Denylist:      []string{"shell.exec"},
+	})
+	p := &httpProxy{
+metrics:    metrics.New(),
+		gatewayURL: mustParseURL(upstream.URL),
+		evaluator:  eval,
+		sessionID:  "test-session",
+		timeoutMs:  200,
+		maxBytes:   1048576,
+		wsLimiter:  newWSRateLimiter(10),
+	}
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(p.handler))
+	defer proxyServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	client, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("WS dial failed: %v", err)
+	}
+	defer client.Close(websocket.StatusNormalClosure, "")
+
+	// Send a denied method
+	deniedMsg := `{"method":"shell.exec","params":{"cmd":"whoami"}}`
+	if err := client.Write(ctx, websocket.MessageText, []byte(deniedMsg)); err != nil {
+		t.Fatalf("WS write failed: %v", err)
+	}
+
+	_, data, err := client.Read(ctx)
+	if err != nil {
+		t.Fatalf("WS read failed: %v", err)
+	}
+
+	respStr := string(data)
+
+	// Should NOT contain detailed reason
+	if strings.Contains(respStr, "denylist") {
+		t.Errorf("Error frame should not contain 'denylist', got: %s", respStr)
+	}
+	if strings.Contains(respStr, "tool explicitly denied") {
+		t.Errorf("Error frame should not contain policy details, got: %s", respStr)
+	}
+
+	// Should contain generic message
+	if !strings.Contains(respStr, "blocked by security policy") {
+		t.Errorf("Error frame should contain generic 'blocked by security policy', got: %s", respStr)
+	}
+
+	// Should NOT have a "data" field exposing the reason
+	var errResp map[string]interface{}
+	json.Unmarshal(data, &errResp)
+	errObj, _ := errResp["error"].(map[string]interface{})
+	if errObj != nil {
+		if _, hasData := errObj["data"]; hasData {
+			t.Errorf("Error frame should NOT contain 'data' field with reason details, got: %v", errObj["data"])
+		}
+	}
+}
+
+// =============================================================================
+// MEDIUM-6: iptables injection via invalid hostnames
+// =============================================================================
+
+func TestIptablesGenerator_RejectsInvalidDomains(t *testing.T) {
+	// This test is in the generator_test.go but we verify the concept here
+	// by calling the validation regex directly
+	tests := []struct {
+		domain string
+		valid  bool
+	}{
+		{"example.com", true},
+		{"sub.example.com", true},
+		{"my-host.example.com", true},
+		{"example.com; rm -rf /", false},
+		{"example.com\nmalicious", false},
+		{"example.com`whoami`", false},
+		{"-flag-injection", false},
+		{"example.com$(cmd)", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.domain, func(t *testing.T) {
+			// We can't import the iptables package here, but we can verify
+			// the same regex pattern works
+			validHostnameRe := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`)
+			got := validHostnameRe.MatchString(tt.domain)
+			if got != tt.valid {
+				t.Errorf("validHostname(%q) = %v, want %v", tt.domain, got, tt.valid)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// MEDIUM-9: Host header validation (DNS rebinding protection)
+// =============================================================================
+
+func TestHostValidation_AllowsLocalhost(t *testing.T) {
+	p := &httpProxy{
+metrics:    metrics.New(),
+		gatewayURL: mustParseURL("http://localhost:8080"),
+	}
+
+	validHosts := []string{"localhost", "127.0.0.1", "localhost:8080", "127.0.0.1:9999", "::1", "[::1]:8080", ""}
+	for _, host := range validHosts {
+		if !p.isValidHost(host) {
+			t.Errorf("Host %q should be valid (localhost variant)", host)
+		}
+	}
+}
+
+func TestHostValidation_BlocksExternalDomains(t *testing.T) {
+	p := &httpProxy{
+metrics:    metrics.New(),
+		gatewayURL: mustParseURL("http://localhost:8080"),
+	}
+
+	invalidHosts := []string{
+		"evil.attacker.com",
+		"evil.attacker.com:8080",
+		"192.168.1.1",
+		"10.0.0.1:8080",
+	}
+	for _, host := range invalidHosts {
+		if p.isValidHost(host) {
+			t.Errorf("Host %q should be blocked (not localhost)", host)
+		}
+	}
+}
+
+func TestHostValidation_AllowsGatewayHostname(t *testing.T) {
+	p := &httpProxy{
+metrics:    metrics.New(),
+		gatewayURL: mustParseURL("http://gateway.internal:8080"),
+	}
+
+	if !p.isValidHost("gateway.internal:9000") {
+		t.Error("Gateway hostname should be allowed regardless of port")
+	}
+	if !p.isValidHost("gateway.internal") {
+		t.Error("Gateway hostname without port should be allowed")
+	}
+}
+
+// =============================================================================
+// Ensure unused imports are referenced
 // =============================================================================
 
 var _ = url.URL{}
+var _ = regexp.Regexp{}

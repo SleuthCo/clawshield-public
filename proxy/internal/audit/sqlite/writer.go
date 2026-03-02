@@ -54,6 +54,14 @@ func NewWriterWithPath(db *sql.DB, dbPath string) (*Writer, error) {
 	w.wg.Add(1)
 	go w.loop()
 
+	// SECURITY: Write an integrity checkpoint at startup so we can detect
+	// if the DB was tampered with while the proxy was offline.
+	if dbPath != "" {
+		if err := w.writeIntegrityCheckpoint("startup"); err != nil {
+			log.Printf("WARNING: Failed to write startup integrity checkpoint: %v", err)
+		}
+	}
+
 	return w, nil
 }
 
@@ -210,8 +218,10 @@ func (w *Writer) flushBatch() error {
 
 	w.flushed += int64(len(batch))
 
-	// Write integrity checkpoint every 10k decisions (only when dbPath is set)
-	if w.dbPath != "" && w.flushed%10000 < int64(len(batch)) && w.flushed >= 10000 {
+	// SECURITY: Write integrity checkpoint every 1000 decisions (down from 10k)
+	// to reduce the tamper window. Each checkpoint stores a SHA-256 hash of the
+	// entire DB file, allowing detection of any modifications between checkpoints.
+	if w.dbPath != "" && w.flushed%1000 < int64(len(batch)) && w.flushed >= 1000 {
 		if err := w.writeIntegrityCheckpoint("batch flush"); err != nil {
 			log.Printf("ERROR: Failed to write integrity checkpoint: %v", err)
 		}

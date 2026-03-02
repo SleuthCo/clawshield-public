@@ -3,8 +3,13 @@ package iptables
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 )
+
+// validHostnameRe matches RFC 952/1123 hostnames (letters, digits, hyphens, dots).
+// This prevents shell metacharacter injection via crafted domain names.
+var validHostnameRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`)
 
 // Config represents the YAML allowlist configuration
 type Config struct {
@@ -54,6 +59,16 @@ func Generate(cfg Config) ([]string, error) {
 
 	// Resolve allowed domains and add allow rules for each resolved IP
 	for _, domain := range cfg.AllowedDomains {
+		// SECURITY: Validate domain names against RFC 952/1123 to prevent
+		// shell metacharacter injection when these values are passed to iptables.
+		// A crafted domain like "example.com; rm -rf /" would be dangerous.
+		if !validHostnameRe.MatchString(domain) {
+			return nil, fmt.Errorf("invalid domain name (contains illegal characters): %s", domain)
+		}
+		if len(domain) > 253 {
+			return nil, fmt.Errorf("domain name too long (max 253 chars): %s", domain)
+		}
+
 		addrs, err := net.LookupHost(domain)
 		if err != nil {
 			// Log warning but continue - domain might be temporarily unreachable
@@ -65,6 +80,11 @@ func Generate(cfg Config) ([]string, error) {
 			if isLoopback(ip) || isWSL2Host(ip) || isIPv6(ip) {
 				continue
 			}
+			// SECURITY: Validate resolved IP is a valid address before using in rule
+			if net.ParseIP(ip) == nil {
+				fmt.Printf("Warning: skipping invalid resolved IP %s for domain %s\n", ip, domain)
+				continue
+			}
 			rules = append(rules, fmt.Sprintf("-A OUTPUT -d %s -j ACCEPT", ip))
 		}
 	}
@@ -73,6 +93,10 @@ func Generate(cfg Config) ([]string, error) {
 	for _, ip := range cfg.AllowedIPs {
 		if isIPv6(ip) {
 			continue
+		}
+		// SECURITY: Validate IP addresses to prevent injection via crafted config
+		if net.ParseIP(ip) == nil {
+			return nil, fmt.Errorf("invalid IP address in allowed_ips: %s", ip)
 		}
 		rules = append(rules, fmt.Sprintf("-A OUTPUT -d %s -j ACCEPT", ip))
 	}
