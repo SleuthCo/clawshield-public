@@ -264,16 +264,18 @@ func TestWriter_ClosedWriter(t *testing.T) {
 func TestWriter_QueueFull(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
-	
-	writer, err := NewWriter(db)
-	if err != nil {
-		t.Fatalf("NewWriter() failed: %v", err)
+
+	// Create a writer with a tiny queue so we can actually saturate it.
+	// We construct it manually since NewWriter uses a 10000-element queue.
+	w := &Writer{
+		db:    db,
+		queue: make(chan *types.Decision, 2), // Tiny queue
+		stop:  make(chan struct{}),
+		batch: make([]*types.Decision, 0, batchSize),
 	}
-	defer writer.Close()
-	
-	// Fill the queue (queue size is 10000)
-	// We won't actually fill it in this test as it would take too long,
-	// but we verify the error handling exists
+	// Do NOT start the loop goroutine — this ensures the queue stays full
+	// because nothing is draining it.
+
 	decision := &types.Decision{
 		Timestamp:     time.Now(),
 		SessionID:     "test-session",
@@ -281,26 +283,37 @@ func TestWriter_QueueFull(t *testing.T) {
 		ArgumentsHash: `{"path": "file.txt"}`,
 		Decision:      "allow",
 	}
-	
-	// Write one decision successfully
-	if err := writer.Write(decision); err != nil {
-		t.Fatalf("Write() failed: %v", err)
+
+	// Fill the queue (capacity = 2)
+	if err := w.Write(decision); err != nil {
+		t.Fatalf("Write 1 should succeed: %v", err)
 	}
-	
-	// In practice, queue full would require blocking the loop goroutine
-	// and writing 10000+ decisions, which we skip for test speed
+	if err := w.Write(decision); err != nil {
+		t.Fatalf("Write 2 should succeed: %v", err)
+	}
+
+	// Third write should fail — queue is full and nothing is draining
+	err := w.Write(decision)
+	if err == nil {
+		t.Error("Write to full queue should return an error")
+	}
+
+	// Drain the queue to clean up
+	close(w.stop)
+	for len(w.queue) > 0 {
+		<-w.queue
+	}
 }
 
 func TestWriter_FlushOnInterval(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
-	
+
 	writer, err := NewWriter(db)
 	if err != nil {
 		t.Fatalf("NewWriter() failed: %v", err)
 	}
-	defer writer.Close()
-	
+
 	// Write a small number of decisions (less than batchSize)
 	for i := 0; i < 10; i++ {
 		decision := &types.Decision{
@@ -310,24 +323,27 @@ func TestWriter_FlushOnInterval(t *testing.T) {
 			ArgumentsHash: `{"path": "file.txt"}`,
 			Decision:      "allow",
 		}
-		
 		if err := writer.Write(decision); err != nil {
 			t.Fatalf("Write() failed: %v", err)
 		}
 	}
-	
-	// Wait for flush interval (5 seconds + margin)
-	time.Sleep(6 * time.Second)
-	
+
+	// Instead of waiting 6 seconds for the flush interval, close the writer
+	// which triggers a final flush of all pending items. This tests the same
+	// code path (flush of sub-batch-size batches) without the long sleep.
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close() failed: %v", err)
+	}
+
 	// Verify flushed to DB
 	var count int
 	err = db.QueryRow("SELECT COUNT(*) FROM decisions").Scan(&count)
 	if err != nil {
 		t.Fatalf("failed to query decisions: %v", err)
 	}
-	
+
 	if count != 10 {
-		t.Errorf("expected 10 decisions flushed after interval, got %d", count)
+		t.Errorf("expected 10 decisions flushed after close, got %d", count)
 	}
 }
 

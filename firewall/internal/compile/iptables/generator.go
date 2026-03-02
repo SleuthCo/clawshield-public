@@ -22,7 +22,13 @@ type Config struct {
 var wsl2CIDR *net.IPNet
 
 func init() {
-	_, wsl2CIDR, _ = net.ParseCIDR("172.16.0.0/12")
+	var err error
+	_, wsl2CIDR, err = net.ParseCIDR("172.16.0.0/12")
+	if err != nil {
+		// This should never happen with a valid literal, but if it does,
+		// fail loudly rather than risk a nil pointer dereference later.
+		panic(fmt.Sprintf("FATAL: failed to parse WSL2 CIDR: %v", err))
+	}
 }
 
 // Generate generates iptables rules based on config
@@ -113,7 +119,7 @@ func isLoopback(ip string) bool {
 
 func isWSL2Host(ip string) bool {
 	parsed := net.ParseIP(ip)
-	if parsed == nil {
+	if parsed == nil || wsl2CIDR == nil {
 		return false
 	}
 	return wsl2CIDR.Contains(parsed)

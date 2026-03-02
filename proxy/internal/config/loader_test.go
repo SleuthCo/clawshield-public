@@ -381,3 +381,83 @@ domain_allowlist:
 		t.Errorf("len(DomainAllowlist) = %d, want 3", len(policy.DomainAllowlist))
 	}
 }
+
+// =============================================================================
+// HIGH-10: Config loader invalid default_action validation test
+// =============================================================================
+
+func TestLoad_InvalidDefaultAction(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name    string
+		action  string
+		wantErr bool
+	}{
+		{"allow is valid", "allow", false},
+		{"deny is valid", "deny", false},
+		{"empty defaults to deny", "", false},
+		{"maybe is invalid", "maybe", true},
+		{"ALLOW is invalid (case sensitive)", "ALLOW", true},
+		{"permit is invalid", "permit", true},
+		{"block is invalid", "block", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := fmt.Sprintf("default_action: %s\n", tt.action)
+			if tt.action == "" {
+				content = "# no default_action set\n"
+			}
+			path := filepath.Join(tmpDir, tt.name+".yaml")
+			os.WriteFile(path, []byte(content), 0644)
+
+			_, err := Load(path)
+			if tt.wantErr && err == nil {
+				t.Errorf("Load() should reject default_action=%q", tt.action)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("Load() should accept default_action=%q, got error: %v", tt.action, err)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// HIGH-11: Config loader timeout boundary tests
+// =============================================================================
+
+func TestLoad_EvaluationTimeoutBoundaries(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name      string
+		timeout   int
+		wantValue int
+	}{
+		{"zero timeout uses default", 0, 0},
+		{"positive timeout preserved", 500, 500},
+		{"large timeout preserved", 60000, 60000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var content string
+			if tt.timeout == 0 {
+				content = "default_action: allow\n"
+			} else {
+				content = fmt.Sprintf("default_action: allow\nevaluation_timeout_ms: %d\n", tt.timeout)
+			}
+			path := filepath.Join(tmpDir, tt.name+".yaml")
+			os.WriteFile(path, []byte(content), 0644)
+
+			policy, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() failed: %v", err)
+			}
+			if policy.EvaluationTimeoutMs != tt.wantValue {
+				t.Errorf("EvaluationTimeoutMs = %d, want %d", policy.EvaluationTimeoutMs, tt.wantValue)
+			}
+		})
+	}
+}

@@ -25,8 +25,11 @@ func ApplyRules(rules []string) error {
 		}
 	}
 
-	// Verify rules were applied (optional sanity check)
-	applied, _ := getIptablesRules()
+	// Verify rules were applied (sanity check)
+	applied, verifyErr := getIptablesRules()
+	if verifyErr != nil {
+		log.Printf("WARNING: failed to verify applied rules: %v", verifyErr)
+	}
 	if len(applied) == 0 {
 		rollback(current)
 		return fmt.Errorf("no rules detected after application")
@@ -77,12 +80,20 @@ func getIptablesRules() ([]string, error) {
 	return rules, nil
 }
 
-// rollback restores the previous rule set
+// rollback restores the previous rule set.
+// Errors during rollback are logged but do not cause a return error — rollback
+// is best-effort. However, every failure is now logged so operators can detect
+// a partial rollback state (which means the firewall may be misconfigured).
 func rollback(oldRules []string) {
 	log.Println("Rolling back iptables rules...")
 
+	var rollbackErrors int
+
 	// Flush OUTPUT chain first
-	exec.Command("iptables", "-F", "OUTPUT").Run()
+	if err := exec.Command("iptables", "-F", "OUTPUT").Run(); err != nil {
+		log.Printf("ERROR: rollback flush failed: %v", err)
+		rollbackErrors++
+	}
 
 	// Reapply old rules in order (already in -S format: "-A OUTPUT ...")
 	for _, rule := range oldRules {
@@ -95,7 +106,15 @@ func rollback(oldRules []string) {
 			continue
 		}
 		cmd := exec.Command("iptables", parts...)
-		cmd.Run() // best effort; don't fail rollback
+		if err := cmd.Run(); err != nil {
+			log.Printf("ERROR: rollback failed to restore rule %q: %v", rule, err)
+			rollbackErrors++
+		}
 	}
-	log.Println("Rollback complete.")
+
+	if rollbackErrors > 0 {
+		log.Printf("WARNING: rollback completed with %d errors — firewall may be in an inconsistent state", rollbackErrors)
+	} else {
+		log.Println("Rollback complete.")
+	}
 }
