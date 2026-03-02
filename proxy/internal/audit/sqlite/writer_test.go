@@ -261,6 +261,149 @@ func TestWriter_ClosedWriter(t *testing.T) {
 	}
 }
 
+func TestWriteDecision_PersistsToolCall(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	writer, err := NewWriter(db)
+	if err != nil {
+		t.Fatalf("NewWriter() failed: %v", err)
+	}
+
+	err = writer.WriteDecision(types.Decision{
+		Timestamp:     time.Now(),
+		SessionID:     "sess-toolcall",
+		Tool:          "file.read",
+		ArgumentsHash: "abc123",
+		Decision:      "allow",
+		Reason:        "ok",
+		PolicyVersion: "1.0",
+	}, &types.ToolCall{
+		RequestJSON:  []byte(`{"method":"file.read","params":{"path":"test.txt"}}`),
+		ResponseJSON: []byte(`{"result":{"content":"hello world"}}`),
+		CreatedAt:    time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("WriteDecision() failed: %v", err)
+	}
+
+	writer.Close()
+
+	// Verify decision was written
+	var decisionID int64
+	var tool string
+	err = db.QueryRow("SELECT decision_id, tool FROM decisions WHERE session_id = ?", "sess-toolcall").Scan(&decisionID, &tool)
+	if err != nil {
+		t.Fatalf("decision not found: %v", err)
+	}
+	if tool != "file.read" {
+		t.Errorf("expected tool=file.read, got %s", tool)
+	}
+
+	// Verify tool call was written and linked to the decision
+	var requestJSON, responseJSON []byte
+	err = db.QueryRow("SELECT request_json, response_json FROM tool_calls WHERE decision_id = ?", decisionID).Scan(&requestJSON, &responseJSON)
+	if err != nil {
+		t.Fatalf("tool_call not found for decision_id=%d: %v", decisionID, err)
+	}
+	if string(requestJSON) != `{"method":"file.read","params":{"path":"test.txt"}}` {
+		t.Errorf("unexpected request_json: %s", requestJSON)
+	}
+	if string(responseJSON) != `{"result":{"content":"hello world"}}` {
+		t.Errorf("unexpected response_json: %s", responseJSON)
+	}
+}
+
+func TestWriteDecision_NilToolCall(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	writer, err := NewWriter(db)
+	if err != nil {
+		t.Fatalf("NewWriter() failed: %v", err)
+	}
+
+	// WriteDecision with nil toolCall should work exactly like Write
+	err = writer.WriteDecision(types.Decision{
+		Timestamp:     time.Now(),
+		SessionID:     "sess-notoolcall",
+		Tool:          "read",
+		ArgumentsHash: "def456",
+		Decision:      "allow",
+		PolicyVersion: "1.0",
+	}, nil)
+	if err != nil {
+		t.Fatalf("WriteDecision(nil toolCall) failed: %v", err)
+	}
+
+	writer.Close()
+
+	// Verify decision was written
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM decisions WHERE session_id = ?", "sess-notoolcall").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected 1 decision, got %d", count)
+	}
+
+	// Verify NO tool_call was written
+	var tcCount int
+	db.QueryRow("SELECT COUNT(*) FROM tool_calls tc JOIN decisions d ON tc.decision_id = d.decision_id WHERE d.session_id = ?", "sess-notoolcall").Scan(&tcCount)
+	if tcCount != 0 {
+		t.Errorf("expected 0 tool_calls for nil toolCall, got %d", tcCount)
+	}
+}
+
+func TestWriteDecision_MixedBatch(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	writer, err := NewWriter(db)
+	if err != nil {
+		t.Fatalf("NewWriter() failed: %v", err)
+	}
+
+	// Write a mix of decisions with and without tool calls
+	writer.Write(&types.Decision{
+		Timestamp: time.Now(), SessionID: "s1", Tool: "read",
+		ArgumentsHash: "h1", Decision: "allow", PolicyVersion: "1.0",
+	})
+	writer.WriteDecision(types.Decision{
+		Timestamp: time.Now(), SessionID: "s2", Tool: "write",
+		ArgumentsHash: "h2", Decision: "allow", PolicyVersion: "1.0",
+	}, &types.ToolCall{
+		RequestJSON: []byte(`{"method":"write"}`),
+		CreatedAt:   time.Now(),
+	})
+	writer.Write(&types.Decision{
+		Timestamp: time.Now(), SessionID: "s3", Tool: "exec",
+		ArgumentsHash: "h3", Decision: "deny", PolicyVersion: "1.0",
+	})
+
+	writer.Close()
+
+	// Verify all 3 decisions written
+	var decCount int
+	db.QueryRow("SELECT COUNT(*) FROM decisions").Scan(&decCount)
+	if decCount != 3 {
+		t.Errorf("expected 3 decisions, got %d", decCount)
+	}
+
+	// Verify exactly 1 tool_call written (for s2 only)
+	var tcCount int
+	db.QueryRow("SELECT COUNT(*) FROM tool_calls").Scan(&tcCount)
+	if tcCount != 1 {
+		t.Errorf("expected 1 tool_call, got %d", tcCount)
+	}
+
+	// Verify the tool_call is linked to the correct decision
+	var linkedSession string
+	db.QueryRow(`SELECT d.session_id FROM tool_calls tc 
+		JOIN decisions d ON tc.decision_id = d.decision_id`).Scan(&linkedSession)
+	if linkedSession != "s2" {
+		t.Errorf("tool_call should be linked to s2, got %s", linkedSession)
+	}
+}
+
 func TestWriter_QueueFull(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -269,9 +412,9 @@ func TestWriter_QueueFull(t *testing.T) {
 	// We construct it manually since NewWriter uses a 10000-element queue.
 	w := &Writer{
 		db:    db,
-		queue: make(chan *types.Decision, 2), // Tiny queue
+		queue: make(chan auditEntry, 2), // Tiny queue
 		stop:  make(chan struct{}),
-		batch: make([]*types.Decision, 0, batchSize),
+		batch: make([]auditEntry, 0, batchSize),
 	}
 	// Do NOT start the loop goroutine — this ensures the queue stays full
 	// because nothing is draining it.

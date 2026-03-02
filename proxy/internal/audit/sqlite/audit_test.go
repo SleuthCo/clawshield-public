@@ -320,25 +320,21 @@ func TestReader_QueryDecisions_WithIncludeToolCall(t *testing.T) {
 	schema, _ := os.ReadFile("schema.sql")
 	db.Exec(string(schema))
 
-	// Write a decision, then manually insert tool_call data since
-	// WriteDecision currently does NOT persist tool call data (known bug —
-	// it delegates to Write() which drops the toolCall parameter).
+	// Use WriteDecision to persist both the decision and tool call atomically
 	w, _ := sqlite.NewWriter(db)
-	w.Write(&types.Decision{
+	w.WriteDecision(types.Decision{
 		Timestamp:     time.Now(),
 		SessionID:     "s1",
 		Tool:          "read",
 		ArgumentsHash: "h",
 		Decision:      "allow",
 		PolicyVersion: "1.0",
+	}, &types.ToolCall{
+		RequestJSON:  []byte(`{"method":"read"}`),
+		ResponseJSON: []byte(`{"result":"ok"}`),
+		CreatedAt:    time.Now(),
 	})
 	w.Close()
-
-	// Manually insert tool_call data for the decision we just wrote
-	var decisionID int64
-	db.QueryRow("SELECT decision_id FROM decisions WHERE session_id = 's1'").Scan(&decisionID)
-	db.Exec(`INSERT INTO tool_calls (decision_id, request_json, response_json) VALUES (?, ?, ?)`,
-		decisionID, `{"method":"read"}`, `{"result":"ok"}`)
 
 	r := sqlite.NewReader(db)
 	logs, err := r.QueryDecisions(context.Background(), sqlite.WithIncludeToolCall())
@@ -349,10 +345,13 @@ func TestReader_QueryDecisions_WithIncludeToolCall(t *testing.T) {
 		t.Fatal("expected at least 1 log")
 	}
 	if logs[0].ToolCall == nil {
-		t.Error("expected tool call data to be included")
+		t.Fatal("expected tool call data to be included")
 	}
-	if logs[0].ToolCall != nil && string(logs[0].ToolCall.RequestJSON) != `{"method":"read"}` {
+	if string(logs[0].ToolCall.RequestJSON) != `{"method":"read"}` {
 		t.Errorf("unexpected request JSON: %s", logs[0].ToolCall.RequestJSON)
+	}
+	if string(logs[0].ToolCall.ResponseJSON) != `{"result":"ok"}` {
+		t.Errorf("unexpected response JSON: %s", logs[0].ToolCall.ResponseJSON)
 	}
 }
 

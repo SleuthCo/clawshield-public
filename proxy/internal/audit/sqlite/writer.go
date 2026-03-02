@@ -21,15 +21,23 @@ const (
 	flushInterval = 5 * time.Second
 )
 
+// auditEntry pairs a decision with an optional tool call so both can be
+// carried through the async channel and persisted atomically in the same
+// transaction.
+type auditEntry struct {
+	decision *types.Decision
+	toolCall *types.ToolCall
+}
+
 // Writer is an async, batched SQLite writer for audit logs.
 type Writer struct {
 	db       *sql.DB
 	dbPath   string
 	mu       sync.Mutex
-	queue    chan *types.Decision
+	queue    chan auditEntry
 	stop     chan struct{}
 	wg       sync.WaitGroup
-	batch    []*types.Decision
+	batch    []auditEntry
 	closed   atomic.Bool
 	flushed  int64
 	dropped  atomic.Int64
@@ -46,9 +54,9 @@ func NewWriterWithPath(db *sql.DB, dbPath string) (*Writer, error) {
 	w := &Writer{
 		db:    db,
 		dbPath: dbPath,
-		queue: make(chan *types.Decision, 10000),
+		queue: make(chan auditEntry, 10000),
 		stop:  make(chan struct{}),
-		batch: make([]*types.Decision, 0, batchSize),
+		batch: make([]auditEntry, 0, batchSize),
 	}
 
 	w.wg.Add(1)
@@ -67,12 +75,17 @@ func NewWriterWithPath(db *sql.DB, dbPath string) (*Writer, error) {
 
 // Write enqueues a decision for async logging.
 func (w *Writer) Write(dec *types.Decision) error {
+	return w.enqueue(auditEntry{decision: dec})
+}
+
+// enqueue sends an audit entry (decision + optional tool call) to the async queue.
+func (w *Writer) enqueue(entry auditEntry) error {
 	if w.closed.Load() {
 		return fmt.Errorf("writer is closed")
 	}
 
 	select {
-	case w.queue <- dec:
+	case w.queue <- entry:
 		return nil
 	default:
 		w.dropped.Add(1)
@@ -96,8 +109,8 @@ func (w *Writer) Close() error {
 	defer w.mu.Unlock()
 	for {
 		select {
-		case dec := <-w.queue:
-			w.batch = append(w.batch, dec)
+		case entry := <-w.queue:
+			w.batch = append(w.batch, entry)
 		default:
 			return w.flushBatch()
 		}
@@ -118,12 +131,12 @@ func (w *Writer) loop() {
 
 	for {
 		select {
-		case dec, ok := <-w.queue:
+		case entry, ok := <-w.queue:
 			if !ok {
 				break
 			}
 			w.mu.Lock()
-			w.batch = append(w.batch, dec)
+			w.batch = append(w.batch, entry)
 			if len(w.batch) >= batchSize {
 				if err := w.flushBatch(); err != nil {
 					log.Printf("ERROR: audit flush failed: %v", err)
@@ -145,8 +158,8 @@ func (w *Writer) loop() {
 			w.mu.Lock()
 			for {
 				select {
-				case dec := <-w.queue:
-					w.batch = append(w.batch, dec)
+				case entry := <-w.queue:
+					w.batch = append(w.batch, entry)
 				default:
 					if len(w.batch) > 0 {
 						if err := w.flushBatch(); err != nil {
@@ -164,12 +177,13 @@ func (w *Writer) loop() {
 // flushBatch writes the current batch to SQLite.
 // Must be called only when mutex is held.
 // ArgumentsHash is expected to be pre-hashed by the caller - stored directly.
+// Tool call data (if present) is inserted in the same transaction as its decision.
 func (w *Writer) flushBatch() error {
 	if len(w.batch) == 0 {
 		return nil
 	}
 
-	batch := make([]*types.Decision, len(w.batch))
+	batch := make([]auditEntry, len(w.batch))
 	copy(batch, w.batch)
 	w.batch = w.batch[:0]
 
@@ -180,21 +194,30 @@ func (w *Writer) flushBatch() error {
 
 	defer tx.Rollback() // nolint:errcheck
 
-	stmt, err := tx.PrepareContext(context.Background(), `
+	decStmt, err := tx.PrepareContext(context.Background(), `
 	INSERT INTO decisions (timestamp, session_id, tool, arguments_hash, decision, reason, policy_version, scanner_type, correlation_id, classification, source, response_blocked)
 	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return fmt.Errorf("prepare insert: %w", err)
+		return fmt.Errorf("prepare decision insert: %w", err)
 	}
-	defer stmt.Close()
+	defer decStmt.Close()
 
-	for _, dec := range batch {
+	// Prepare tool_calls insert lazily — only if any entries have tool call data
+	var tcStmt *sql.Stmt
+	defer func() {
+		if tcStmt != nil {
+			tcStmt.Close()
+		}
+	}()
+
+	for _, entry := range batch {
+		dec := entry.decision
 		// Store ArgumentsHash directly - caller is responsible for hashing
 		respBlocked := 0
 		if dec.ResponseBlocked {
 			respBlocked = 1
 		}
-		_, err = stmt.ExecContext(context.Background(),
+		result, err := decStmt.ExecContext(context.Background(),
 			dec.Timestamp,
 			dec.SessionID,
 			dec.Tool,
@@ -209,6 +232,36 @@ func (w *Writer) flushBatch() error {
 			respBlocked)
 		if err != nil {
 			return fmt.Errorf("insert decision: %w", err)
+		}
+
+		// If this entry has tool call data, insert it linked to the decision
+		if entry.toolCall != nil {
+			if tcStmt == nil {
+				tcStmt, err = tx.PrepareContext(context.Background(), `
+				INSERT INTO tool_calls (decision_id, request_json, response_json, created_at)
+				VALUES (?, ?, ?, ?)`)
+				if err != nil {
+					return fmt.Errorf("prepare tool_call insert: %w", err)
+				}
+			}
+
+			decisionID, err := result.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("get decision_id for tool_call: %w", err)
+			}
+
+			createdAt := entry.toolCall.CreatedAt
+			if createdAt.IsZero() {
+				createdAt = dec.Timestamp
+			}
+			_, err = tcStmt.ExecContext(context.Background(),
+				decisionID,
+				entry.toolCall.RequestJSON,
+				entry.toolCall.ResponseJSON,
+				createdAt)
+			if err != nil {
+				return fmt.Errorf("insert tool_call: %w", err)
+			}
 		}
 	}
 
@@ -270,7 +323,8 @@ func (w *Writer) computeDBHash() (string, error) {
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
-// WriteDecision writes a decision and optionally its tool call.
+// WriteDecision writes a decision and optionally its associated tool call data.
+// Both the decision and tool call are persisted atomically in the same transaction.
 func (w *Writer) WriteDecision(decision types.Decision, toolCall *types.ToolCall) error {
-	return w.Write(&decision)
+	return w.enqueue(auditEntry{decision: &decision, toolCall: toolCall})
 }
