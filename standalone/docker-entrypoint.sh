@@ -18,16 +18,24 @@ if [ -z "$GATEWAY_AUTH_TOKEN" ]; then
   echo "Generated random gateway auth token."
 fi
 
-# --- Inject Gateway Token into openclaw.json ---
-# Replace the placeholder token in the config with the actual token
+# --- Inject Gateway Token and Password into openclaw.json ---
+# Replace the placeholder token and weak default password with strong random values
 OPENCLAW_CONFIG="/home/clawshield/.openclaw/openclaw.json"
+
+# SECURITY: Generate a strong random password for the gateway auth
+# This prevents the hardcoded placeholder from being used in any deployment
+GATEWAY_AUTH_PASSWORD=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+
 if [ -f "$OPENCLAW_CONFIG" ]; then
   # Use jq if available, fallback to sed
   if command -v jq >/dev/null 2>&1; then
-    jq --arg token "$GATEWAY_AUTH_TOKEN" '.gateway.auth.token = $token' "$OPENCLAW_CONFIG" > "${OPENCLAW_CONFIG}.tmp" && \
+    jq --arg token "$GATEWAY_AUTH_TOKEN" --arg password "$GATEWAY_AUTH_PASSWORD" \
+      '.gateway.auth.token = $token | .gateway.auth.password = $password' \
+      "$OPENCLAW_CONFIG" > "${OPENCLAW_CONFIG}.tmp" && \
       mv "${OPENCLAW_CONFIG}.tmp" "$OPENCLAW_CONFIG"
   else
     sed -i "s/\"token\": \"clawshield\"/\"token\": \"${GATEWAY_AUTH_TOKEN}\"/" "$OPENCLAW_CONFIG"
+    sed -i "s/\"password\": \"REPLACE_WITH_STRONG_PASSWORD\"/\"password\": \"${GATEWAY_AUTH_PASSWORD}\"/" "$OPENCLAW_CONFIG"
   fi
 fi
 

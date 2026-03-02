@@ -349,7 +349,9 @@ func runStdioProxy(cfg *engine.Policy, evaluator *engine.Evaluator, auditWriter 
 					PolicyVersion: "1.0",
 					ScannerType:   scannerType,
 				}
-				_ = auditWriter.Write(&auditDec)
+				if err := auditWriter.Write(&auditDec); err != nil {
+					log.Printf("SECURITY WARNING: audit write failed for stdio response: %v", err)
+				}
 			}
 
 			if respDecision == engine.Deny {
@@ -497,11 +499,11 @@ func validateBinary(path string) error {
 }
 
 // generateSessionID creates a cryptographically random session ID.
+// SECURITY: Refuses to start with a predictable session ID if crypto/rand fails.
 func generateSessionID() string {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		// Fallback to timestamp if crypto/rand fails (shouldn't happen)
-		return fmt.Sprintf("session-%d", time.Now().UnixNano())
+		log.Fatalf("FATAL: crypto/rand failed — refusing to generate insecure session ID: %v", err)
 	}
 	return fmt.Sprintf("session-%x", buf)
 }
