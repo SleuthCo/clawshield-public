@@ -65,6 +65,23 @@ Cryptographic integrity tracking.
 | `db_hash` | TEXT | SHA-256 hash of entire SQLite database file at time of checkpoint |
 | `reason` | TEXT | e.g., "daily rotation", "policy update" |
 
+### `security_events`
+Cross-layer security event audit trail. Records events exchanged between the proxy, firewall, and eBPF monitor via the event bus, along with any adaptive reactions taken.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `event_id` | INTEGER | Unique auto-incrementing ID |
+| `timestamp` | TIMESTAMP | When the event occurred |
+| `event_type` | TEXT | Type of security event (e.g., `privesc`, `injection_blocked`, `port_scan`, `exec_suspicious`, `malware_blocked`, `vuln_blocked`) |
+| `severity` | TEXT | Event severity: `critical`, `high`, `medium`, `low`, `info` |
+| `source` | TEXT | Which layer produced the event: `proxy`, `ebpf`, `firewall`, `adaptive` |
+| `session_id` | TEXT | Proxy session ID (for proxy-originated events) |
+| `pid` | INTEGER | Process ID (for eBPF-originated events) |
+| `tool` | TEXT | MCP tool name or command involved |
+| `reason` | TEXT | Human-readable explanation |
+| `details` | JSON | Event-specific metadata as key-value pairs |
+| `reaction` | TEXT | Adaptive action taken in response (e.g., `elevate_sensitivity`, `elevate_default_deny`) |
+
 ## Argument Redaction
 
 Sensitive fields (e.g., API keys, tokens) are identified by key name and replaced with `[REDACTED]` before hashing. The hash (`arguments_hash`) is stored in the `decisions` table; full arguments remain in `tool_calls` for forensic use.

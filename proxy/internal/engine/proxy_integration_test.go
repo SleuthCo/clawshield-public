@@ -1,6 +1,6 @@
 // +build integration
 
-package integration
+package engine_test
 
 import (
 	"context"
@@ -259,7 +259,7 @@ arg_filters:
 		{
 			message:          `{"method": "read", "params": {"path": "file.txt"}}`,
 			expectedDecision: "allow",
-			expectedReason:   "default allowed",
+			expectedReason:   "allowlist",
 		},
 		{
 			message:          `{"method": "read", "params": {"path": "secret.txt"}}`,
@@ -269,12 +269,12 @@ arg_filters:
 		{
 			message:          `{"method": "write", "params": {"path": "file.txt"}}`,
 			expectedDecision: "deny",
-			expectedReason:   "default denied",
+			expectedReason:   "not in allowlist",
 		},
 		{
 			message:          `{"method": "web.fetch", "params": {"url": "https://example.com"}}`,
 			expectedDecision: "allow",
-			expectedReason:   "default allowed",
+			expectedReason:   "allowlist",
 		},
 		{
 			message:          `{"method": "web.fetch", "params": {"url": "https://evil.com"}}`,

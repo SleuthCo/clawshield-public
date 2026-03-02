@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SleuthCo/clawshield/proxy/internal/scanner"
+	"github.com/SleuthCo/clawshield/shared/types"
 )
 
 type Policy struct {
@@ -32,6 +33,9 @@ type Policy struct {
 
 	// OpenClaw gateway integration
 	OpenClaw *OpenClawConfig `yaml:"openclaw"`
+
+	// Cross-layer adaptive response configuration
+	Adaptive *types.AdaptiveConfig `yaml:"adaptive"`
 }
 
 // ChannelPolicy defines per-channel tool restrictions for OpenClaw.
@@ -55,6 +59,14 @@ type Evaluator struct {
 	vulnScanner        *scanner.VulnScanner
 	injectionDetector  *scanner.InjectionDetector
 	malwareScanner     *scanner.MalwareScanner
+
+	// Dynamic overrides set by the adaptive controller (cross-layer integration).
+	// These are thread-safe and expire automatically.
+	overrideMu              sync.RWMutex
+	sensitivityOverride     string    // Temporary injection sensitivity level
+	sensitivityOverrideExp  time.Time // When the sensitivity override expires
+	defaultActionOverride   string    // Temporary default action override
+	defaultActionOverrideExp time.Time // When the default action override expires
 }
 
 func NewEvaluator(policy *Policy) *Evaluator {
@@ -256,7 +268,8 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 		return Allow, "tool in allowlist, scans passed"
 	}
 
-	if e.policy.DefaultAction == Allow {
+	effectiveDefault := e.effectiveDefaultAction()
+	if effectiveDefault == Allow {
 		return Allow, "default allowed"
 	}
 	return Deny, "default denied"
@@ -524,3 +537,57 @@ func extractDomain(urlStr string) string {
 	}
 	return u.Hostname()
 }
+
+// --- Cross-Layer Adaptive Override Methods ---
+
+// SetSensitivityOverride temporarily elevates the injection detection sensitivity.
+// The override expires at the given time, after which normal policy sensitivity resumes.
+func (e *Evaluator) SetSensitivityOverride(level string, expiresAt time.Time) {
+	e.overrideMu.Lock()
+	defer e.overrideMu.Unlock()
+	e.sensitivityOverride = level
+	e.sensitivityOverrideExp = expiresAt
+	log.Printf("Evaluator: injection sensitivity overridden to %q until %s", level, expiresAt.Format(time.RFC3339))
+}
+
+// SetDefaultActionOverride temporarily overrides the default policy action.
+// Typically used to force deny-by-default when the adaptive controller detects elevated threat.
+func (e *Evaluator) SetDefaultActionOverride(action string, expiresAt time.Time) {
+	e.overrideMu.Lock()
+	defer e.overrideMu.Unlock()
+	e.defaultActionOverride = action
+	e.defaultActionOverrideExp = expiresAt
+	log.Printf("Evaluator: default action overridden to %q until %s", action, expiresAt.Format(time.RFC3339))
+}
+
+// ClearOverrides removes all active adaptive overrides.
+func (e *Evaluator) ClearOverrides() {
+	e.overrideMu.Lock()
+	defer e.overrideMu.Unlock()
+	e.sensitivityOverride = ""
+	e.defaultActionOverride = ""
+}
+
+// effectiveDefaultAction returns the current default action, considering any active override.
+func (e *Evaluator) effectiveDefaultAction() string {
+	e.overrideMu.RLock()
+	defer e.overrideMu.RUnlock()
+
+	if e.defaultActionOverride != "" && time.Now().Before(e.defaultActionOverrideExp) {
+		return e.defaultActionOverride
+	}
+	return e.policy.DefaultAction
+}
+
+// HasActiveOverrides returns true if any adaptive overrides are currently active.
+func (e *Evaluator) HasActiveOverrides() bool {
+	e.overrideMu.RLock()
+	defer e.overrideMu.RUnlock()
+
+	now := time.Now()
+	return (e.sensitivityOverride != "" && now.Before(e.sensitivityOverrideExp)) ||
+		(e.defaultActionOverride != "" && now.Before(e.defaultActionOverrideExp))
+}
+
+// Ensure types import is used
+var _ = types.AdaptiveConfig{}
