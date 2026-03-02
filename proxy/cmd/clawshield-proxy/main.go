@@ -314,20 +314,26 @@ func runStdioProxy(cfg *engine.Policy, evaluator *engine.Evaluator, auditWriter 
 			respDecision := "allow"
 			respReason := "mcp server response"
 			scannerType := ""
-			if evaluator.InjectionDetector() != nil || evaluator.MalwareScanner() != nil {
+			if evaluator.InjectionDetector() != nil || evaluator.MalwareScanner() != nil || evaluator.SecretsScanner() != nil || evaluator.PIIScanner() != nil {
 				evalCtx, evalCancel := context.WithTimeout(ctx, timeoutDuration)
-				d, r := evaluator.EvaluateResponse(evalCtx, respMethod, string(line))
+				respResult := evaluator.EvaluateResponse(evalCtx, respMethod, string(line))
 				evalCancel()
-				respDecision = d
-				respReason = r
-				if d == engine.Deny {
-					if len(r) > 0 {
-						if r[0] == 'p' { // prompt_injection*
+				respDecision = respResult.Decision
+				respReason = respResult.Reason
+				if respResult.Decision == engine.Deny {
+					if len(respResult.Reason) > 0 {
+						if respResult.Reason[0] == 'p' { // prompt_injection*
 							scannerType = "injection"
-						} else if r[0] == 'm' { // malware_scan*
+						} else if respResult.Reason[0] == 'm' { // malware_scan*
 							scannerType = "malware"
+						} else if respResult.Reason[0] == 's' { // secrets_scan*
+							scannerType = "secrets"
 						}
 					}
+				} else if respResult.WasRedacted {
+					line = []byte(respResult.RedactedBody)
+					scannerType = "redaction"
+					log.Printf("REDACTED RESPONSE: method=%s reason=%s", respMethod, respResult.Reason)
 				}
 			}
 

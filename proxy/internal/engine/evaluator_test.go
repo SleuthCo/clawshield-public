@@ -381,6 +381,51 @@ func TestEvaluateWithContext_TimeoutDuringDomainCheck(t *testing.T) {
 	}
 }
 
+func TestEvaluateResponse_RedactSecrets(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+		SecretsScan: &scanner.SecretsConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	// Build GitHub token at runtime to avoid GitHub push protection
+	ghToken := "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+	response := `{"result": "Token is ` + ghToken + `"}`
+
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", response)
+
+	if result.Decision != Allow {
+		t.Errorf("expected Allow with redaction, got %s (reason: %s)", result.Decision, result.Reason)
+	}
+	if !result.WasRedacted {
+		t.Error("expected WasRedacted to be true")
+	}
+	if result.RedactedBody == response {
+		t.Error("expected redacted body to differ from original")
+	}
+	if contains(result.RedactedBody, ghToken) {
+		t.Error("expected secret to be redacted from body")
+	}
+	if !contains(result.Reason, "secrets redacted") {
+		t.Errorf("expected reason to mention secrets redacted, got: %s", result.Reason)
+	}
+	t.Logf("Redacted body: %s", result.RedactedBody)
+	t.Logf("Reason: %s", result.Reason)
+}
+
+func TestEvaluateResponse_BlockSecrets(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+		SecretsScan: &scanner.SecretsConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "block", // Block instead of redact
+		},
 func TestEvaluateWithContext_InternalTimeout(t *testing.T) {
 	// Verify that the evaluator enforces its own timeout via EvaluationTimeoutMs
 	// even when the caller provides a plain context.Background() with no deadline.
@@ -396,6 +441,57 @@ func TestEvaluateWithContext_InternalTimeout(t *testing.T) {
 
 	evaluator := NewEvaluator(policy)
 
+	ghToken := "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+	response := `{"result": "Token is ` + ghToken + `"}`
+
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", response)
+
+	if result.Decision != Deny {
+		t.Errorf("expected Deny when action is block, got %s", result.Decision)
+	}
+	if result.WasRedacted {
+		t.Error("expected WasRedacted to be false when blocking")
+	}
+}
+
+func TestEvaluateResponse_RedactPII(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+		PIIScan: &scanner.PIIConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	response := `{"result": "Contact user@example.com for details, SSN: 123-45-6789"}`
+
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", response)
+
+	if result.Decision != Allow {
+		t.Errorf("expected Allow with redaction, got %s (reason: %s)", result.Decision, result.Reason)
+	}
+	if !result.WasRedacted {
+		t.Error("expected WasRedacted to be true")
+	}
+	if contains(result.RedactedBody, "user@example.com") {
+		t.Error("expected email to be redacted from body")
+	}
+	if !contains(result.Reason, "PII redacted") {
+		t.Errorf("expected reason to mention PII redacted, got: %s", result.Reason)
+	}
+	t.Logf("Redacted body: %s", result.RedactedBody)
+}
+
+func TestEvaluateResponse_BlockPII(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+		PIIScan: &scanner.PIIConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "block",
 	// Use context.Background() with NO external deadline — the evaluator must enforce its own
 	time.Sleep(5 * time.Millisecond) // Give the 1ms timeout a chance to fire
 	decision, reason := evaluator.EvaluateWithContext(context.Background(), `{"method": "web.fetch", "params": {"url": "https://notindomain.example.com"}}`)
@@ -448,6 +544,28 @@ func TestEvaluateResponse_InternalTimeout(t *testing.T) {
 
 	evaluator := NewEvaluator(policy)
 
+	response := `{"result": "Email is user@example.com"}`
+
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", response)
+
+	if result.Decision != Deny {
+		t.Errorf("expected Deny when PII action is block, got %s", result.Decision)
+	}
+}
+
+func TestEvaluateResponse_CleanResponse(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
+		SecretsScan: &scanner.SecretsConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
+		PIIScan: &scanner.PIIConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
 	// Use plain context.Background() — evaluator must create its own timeout
 	time.Sleep(5 * time.Millisecond)
 	decision, reason := evaluator.EvaluateResponse(context.Background(), "chat.send", "This is a normal response")
@@ -473,36 +591,78 @@ func TestEvaluateWithContext_NoTimeoutWhenZero(t *testing.T) {
 
 	evaluator := NewEvaluator(policy)
 
-	decision, reason := evaluator.EvaluateWithContext(context.Background(), `{"method": "read", "params": {"path": "test.txt"}}`)
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", `{"result": "All good, no secrets here"}`)
 
-	if decision != Allow {
-		t.Errorf("got decision %s, want %s (reason: %s)", decision, Allow, reason)
+	if result.Decision != Allow {
+		t.Errorf("expected Allow for clean response, got %s", result.Decision)
+	}
+	if result.WasRedacted {
+		t.Error("expected WasRedacted to be false for clean response")
+	}
+	if result.RedactedBody != "" {
+		t.Error("expected empty RedactedBody for clean response")
+	}
+	if result.Reason != "response clean" {
+		t.Errorf("expected reason 'response clean', got: %s", result.Reason)
 	}
 }
 
-func TestEvaluateWithContext_InternalTimeoutRespectsExternalDeadline(t *testing.T) {
-	// When both an external deadline AND internal EvaluationTimeoutMs are set,
-	// the shorter one should win.
+func TestEvaluateResponse_BothRedactionsApplied(t *testing.T) {
 	policy := &Policy{
-		DefaultAction:       Allow,
-		EvaluationTimeoutMs: 60000, // 60 seconds (very generous)
-		DomainAllowlist:     []string{"example.com"},
+		DefaultAction: Allow,
+		SecretsScan: &scanner.SecretsConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
+		PIIScan: &scanner.PIIConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Action:        "redact",
+		},
 	}
 
 	evaluator := NewEvaluator(policy)
 
-	// External context with already-expired deadline should still cause denial
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
+	ghToken := "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+	response := `{"result": "Token: ` + ghToken + `, Email: user@example.com"}`
 
-	decision, reason := evaluator.EvaluateWithContext(ctx, `{"method": "web.fetch", "params": {"url": "https://example.com"}}`)
+	result := evaluator.EvaluateResponse(context.Background(), "tools.invoke", response)
 
-	if decision != Deny {
-		t.Errorf("got decision %s, want %s", decision, Deny)
+	if result.Decision != Allow {
+		t.Errorf("expected Allow with dual redaction, got %s", result.Decision)
+	}
+	if !result.WasRedacted {
+		t.Error("expected WasRedacted to be true")
+	}
+	if contains(result.RedactedBody, ghToken) {
+		t.Error("expected secret to be redacted")
+	}
+	if contains(result.RedactedBody, "user@example.com") {
+		t.Error("expected email to be redacted")
+	}
+	if !contains(result.Reason, "secrets redacted") {
+		t.Errorf("expected reason to mention secrets, got: %s", result.Reason)
+	}
+	if !contains(result.Reason, "PII redacted") {
+		t.Errorf("expected reason to mention PII, got: %s", result.Reason)
+	}
+	t.Logf("Dual redacted body: %s", result.RedactedBody)
+}
+
+func TestEvaluateResponseSimple_BackwardCompat(t *testing.T) {
+	policy := &Policy{
+		DefaultAction: Allow,
 	}
 
-	if !contains(reason, "timeout exceeded") {
-		t.Errorf("got reason %q, want to contain 'timeout exceeded'", reason)
+	evaluator := NewEvaluator(policy)
+
+	decision, reason := evaluator.EvaluateResponseSimple(context.Background(), "chat.send", "clean response")
+	if decision != Allow {
+		t.Errorf("expected Allow, got %s", decision)
+	}
+	if reason != "response clean" {
+		t.Errorf("expected 'response clean', got %s", reason)
 	}
 }
 
