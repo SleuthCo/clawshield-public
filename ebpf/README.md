@@ -128,6 +128,29 @@ Together they provide defense-in-depth:
 2. Firewall blocks unauthorized network destinations
 3. Proxy enforces policy on MCP tool calls
 
+### Cross-Layer Event Bus
+
+The eBPF monitor publishes security events to a Unix domain socket at `/tmp/clawshield-events.sock`. When the ClawShield proxy is running with `adaptive.enabled: true`, it listens on this socket and reacts to eBPF events automatically.
+
+**Events published by the eBPF monitor:**
+
+| Event Type | Trigger | Severity |
+|------------|---------|----------|
+| `exec_suspicious` | Suspicious command pattern or fork bomb | `high` / `critical` |
+| `port_scan` | Process connects to >20 unique ports | `medium` |
+| `file_access` | Access to `/etc/shadow`, `/etc/sudoers`, SSH keys | `high` |
+| `privesc` | Non-root process calls `setuid(0)` | `critical` |
+
+**Example adaptive reactions:**
+
+- `privesc` → Proxy elevates injection detection sensitivity to `high` for 5 minutes
+- `port_scan` → Proxy restricts domain allowlist for 10 minutes
+- `exec_suspicious` → Proxy tightens default policy to deny-by-default
+
+Events are sent as newline-delimited JSON over the Unix socket. The socket path can be configured in `config/default.yaml` under `alerts.event_socket`, or defaults to `/tmp/clawshield-events.sock`.
+
+If the proxy is not running, the eBPF monitor operates standalone — events are still logged to console, file, and Telegram as before.
+
 ## Detectors
 
 ### Process Execution (`trace_execve`)

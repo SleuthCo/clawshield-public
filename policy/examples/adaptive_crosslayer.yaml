@@ -1,0 +1,133 @@
+# Cross-Layer Adaptive Security Policy
+# Demonstrates ClawShield's defense-in-depth integration between
+# the proxy (Layer 1), firewall (Layer 2), and eBPF monitor (Layer 3).
+#
+# When enabled, security events from one layer automatically trigger
+# defensive responses in other layers via the event bus.
+
+default_action: deny
+
+evaluation_timeout_ms: 150
+
+max_message_bytes: 262144  # 256KB
+
+# --- Access Control ---
+
+allowlist:
+  - chat.send
+  - chat.stream
+  - chat.cancel
+  - tools.invoke
+  - tools.list
+  - agents.list
+  - resources.list
+  - resources.read
+
+denylist:
+  - shell.exec
+  - system.raw
+  - file.delete
+  - db.raw_query
+  - process.exec
+  - eval
+
+# --- Argument Filters ---
+
+arg_filters:
+  - tool: "chat.send"
+    regex: "(api_key|password|token|secret)[^\\w]*[=:]?\\s*['\"]?[a-zA-Z0-9/+._-]{20,}['\"]?"
+  - tool: "tools.invoke"
+    regex: "(api_key|password|token|secret)[^\\w]*[=:]?\\s*['\"]?[a-zA-Z0-9/+._-]{20,}['\"]?"
+
+# --- Security Scanners ---
+
+vuln_scan:
+  enabled: true
+  rules:
+    - sqli
+    - ssrf
+    - path_traversal
+    - command_injection
+    - xss
+
+prompt_injection:
+  enabled: true
+  scan_requests: true
+  scan_responses: true
+  canary_tokens: true
+  sensitivity: medium       # Starts at medium — adaptive controller can elevate to high
+  trusted_response_tools:
+    - "tools/list"
+    - "resources/list"
+
+malware_scan:
+  enabled: true
+  checks:
+    - magic_bytes
+    - entropy
+    - signatures
+    - archive_safety
+    - script_detection
+  entropy_threshold: 6.5
+  max_decoded_size: 10485760
+
+# --- Cross-Layer Adaptive Response ---
+#
+# The event bus connects all three security layers:
+#   eBPF (Python) --> Unix Socket --> Proxy (Go) --> Firewall (Go)
+#
+# Rules define automatic reactions when events from one layer
+# match trigger conditions.
+
+adaptive:
+  enabled: true
+  socket_path: /tmp/clawshield-events.sock
+
+  rules:
+    # Rule 1: Privilege escalation detected by eBPF
+    # → Elevate injection scanner sensitivity to "high" for 5 minutes
+    - trigger:
+        source: ebpf
+        type: privesc
+      action: elevate_sensitivity
+      params:
+        duration_seconds: 300
+
+    # Rule 2: Suspicious command execution detected by eBPF
+    # → Elevate injection scanner sensitivity (high severity only)
+    - trigger:
+        source: ebpf
+        type: exec_suspicious
+        min_severity: high
+      action: elevate_sensitivity
+      params:
+        duration_seconds: 180
+
+    # Rule 3: Port scan detected by eBPF
+    # → Temporarily restrict domain access for 10 minutes
+    - trigger:
+        source: ebpf
+        type: port_scan
+      action: restrict_domains
+      params:
+        duration_seconds: 600
+
+    # Rule 4: Multiple injection attempts blocked by proxy
+    # → Switch default action to deny for 15 minutes (attack in progress)
+    - trigger:
+        source: proxy
+        type: injection_blocked
+        min_count: 3
+        window_seconds: 60
+      action: elevate_default_deny
+      params:
+        duration_seconds: 900
+
+    # Rule 5: Malware detected in response by proxy
+    # → Immediately switch to deny-by-default for 30 minutes
+    - trigger:
+        source: proxy
+        type: malware_blocked
+      action: elevate_default_deny
+      params:
+        duration_seconds: 1800

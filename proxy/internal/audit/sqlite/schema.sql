@@ -61,3 +61,22 @@ CREATE TABLE IF NOT EXISTS integrity_checkpoints (
     db_hash TEXT NOT NULL,  -- SHA-256 of entire DB state at time of checkpoint
     reason TEXT             -- e.g., "policy update", "daily rotation"
 );
+
+-- Cross-layer security events (defense-in-depth audit trail)
+CREATE TABLE IF NOT EXISTS security_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    event_type TEXT NOT NULL,    -- e.g., "privesc", "injection_blocked", "port_scan"
+    severity TEXT NOT NULL,      -- critical, high, medium, low, info
+    source TEXT NOT NULL,        -- proxy, ebpf, firewall, adaptive
+    session_id TEXT,
+    pid INTEGER,
+    tool TEXT,
+    reason TEXT,
+    details JSON,
+    reaction TEXT                -- adaptive action taken, if any
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_events_timestamp ON security_events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_security_events_source ON security_events(source);

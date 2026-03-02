@@ -1,0 +1,187 @@
+// Package bus provides a cross-layer event bus for ClawShield security integration.
+//
+// The event bus enables communication between the three defense layers:
+//   - Layer 1 (Proxy): publishes app-level security events, consumes kernel-level events
+//   - Layer 2 (Firewall): consumes events to dynamically add temporary block rules
+//   - Layer 3 (eBPF): publishes kernel-level security events via Unix socket
+//
+// Events are published non-blocking (dropped with logging if a subscriber is full)
+// to ensure producers never stall on slow consumers.
+package bus
+
+import (
+	"log"
+	"sync"
+
+	"github.com/SleuthCo/clawshield/shared/types"
+)
+
+// SubscriberBufferSize is the channel buffer size for each subscriber.
+// Events are dropped if a subscriber falls behind by this many events.
+const SubscriberBufferSize = 256
+
+// EventFilter controls which events a subscriber receives.
+// Zero-value fields match all events (no filtering on that dimension).
+type EventFilter struct {
+	// EventTypes limits delivery to these event types. Empty = all types.
+	EventTypes []types.EventType
+
+	// Sources limits delivery to events from these sources. Empty = all sources.
+	Sources []types.EventSource
+
+	// MinSeverity limits delivery to events at or above this severity. Empty = all severities.
+	MinSeverity types.Severity
+}
+
+// subscriber wraps a channel and its filter.
+type subscriber struct {
+	ch     chan *types.SecurityEvent
+	filter EventFilter
+	id     int
+}
+
+// EventBus is a thread-safe in-process event bus that fans out SecurityEvents
+// to registered subscribers with optional filtering.
+type EventBus struct {
+	mu          sync.RWMutex
+	subscribers []subscriber
+	nextID      int
+	closed      bool
+	dropped     int64 // Counter for dropped events (subscriber channel full)
+}
+
+// New creates a new EventBus ready for use.
+func New() *EventBus {
+	return &EventBus{}
+}
+
+// Subscribe registers a new subscriber with an optional filter.
+// Returns a channel that will receive matching events and a subscription ID
+// that can be used to unsubscribe.
+func (b *EventBus) Subscribe(filter EventFilter) (<-chan *types.SecurityEvent, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	ch := make(chan *types.SecurityEvent, SubscriberBufferSize)
+	id := b.nextID
+	b.nextID++
+
+	b.subscribers = append(b.subscribers, subscriber{
+		ch:     ch,
+		filter: filter,
+		id:     id,
+	})
+
+	return ch, id
+}
+
+// Unsubscribe removes a subscriber by ID and closes its channel.
+func (b *EventBus) Unsubscribe(id int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for i, sub := range b.subscribers {
+		if sub.id == id {
+			close(sub.ch)
+			b.subscribers = append(b.subscribers[:i], b.subscribers[i+1:]...)
+			return
+		}
+	}
+}
+
+// Publish sends an event to all matching subscribers.
+// This is non-blocking: if a subscriber's channel is full, the event is dropped
+// for that subscriber and a warning is logged.
+func (b *EventBus) Publish(event *types.SecurityEvent) {
+	if event == nil {
+		return
+	}
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if b.closed {
+		return
+	}
+
+	for _, sub := range b.subscribers {
+		if !matchesFilter(event, &sub.filter) {
+			continue
+		}
+
+		select {
+		case sub.ch <- event:
+			// Delivered successfully
+		default:
+			// Channel full — drop event to avoid blocking the producer
+			b.dropped++
+			if b.dropped%100 == 1 {
+				log.Printf("WARNING: event bus subscriber %d channel full, dropped event (type=%s source=%s). Total dropped: %d",
+					sub.id, event.EventType, event.Source, b.dropped)
+			}
+		}
+	}
+}
+
+// Dropped returns the total number of events dropped due to slow subscribers.
+func (b *EventBus) Dropped() int64 {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.dropped
+}
+
+// Close shuts down the event bus and closes all subscriber channels.
+func (b *EventBus) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.closed {
+		return
+	}
+	b.closed = true
+
+	for _, sub := range b.subscribers {
+		close(sub.ch)
+	}
+	b.subscribers = nil
+}
+
+// matchesFilter checks if an event passes a subscriber's filter criteria.
+func matchesFilter(event *types.SecurityEvent, filter *EventFilter) bool {
+	// Check event type filter
+	if len(filter.EventTypes) > 0 {
+		found := false
+		for _, et := range filter.EventTypes {
+			if event.EventType == et {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	// Check source filter
+	if len(filter.Sources) > 0 {
+		found := false
+		for _, src := range filter.Sources {
+			if event.Source == src {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	// Check minimum severity filter
+	if filter.MinSeverity != "" {
+		if event.Severity.Weight() < filter.MinSeverity.Weight() {
+			return false
+		}
+	}
+
+	return true
+}
