@@ -29,6 +29,7 @@ type Policy struct {
 	PromptInjection *scanner.PromptInjectionConfig  `yaml:"prompt_injection"`
 	MalwareScan     *scanner.MalwareScanConfig      `yaml:"malware_scan"`
 	SecretsScan     *scanner.SecretsConfig           `yaml:"secrets_scan"`
+	PIIScan         *scanner.PIIConfig               `yaml:"pii_scan"`
 
 	// OpenClaw gateway integration
 	OpenClaw *OpenClawConfig `yaml:"openclaw"`
@@ -56,6 +57,7 @@ type Evaluator struct {
 	injectionDetector  *scanner.InjectionDetector
 	malwareScanner     *scanner.MalwareScanner
 	secretsScanner     *scanner.SecretsScanner
+	piiScanner         *scanner.PIIScanner
 }
 
 func NewEvaluator(policy *Policy) *Evaluator {
@@ -78,6 +80,7 @@ func NewEvaluator(policy *Policy) *Evaluator {
 	e.injectionDetector = scanner.NewInjectionDetector(policy.PromptInjection)
 	e.malwareScanner = scanner.NewMalwareScanner(policy.MalwareScan)
 	e.secretsScanner = scanner.NewSecretsScanner(policy.SecretsScan)
+	e.piiScanner = scanner.NewPIIScanner(policy.PIIScan)
 
 	return e
 }
@@ -100,6 +103,11 @@ func (e *Evaluator) MalwareScanner() *scanner.MalwareScanner {
 // SecretsScanner returns the secrets scanner (may be nil if disabled).
 func (e *Evaluator) SecretsScanner() *scanner.SecretsScanner {
 	return e.secretsScanner
+}
+
+// PIIScanner returns the PII scanner (may be nil if disabled).
+func (e *Evaluator) PIIScanner() *scanner.PIIScanner {
+	return e.piiScanner
 }
 
 // AgentAllowlist returns the configured agent allowlist from OpenClaw policy.
@@ -263,6 +271,19 @@ func (e *Evaluator) EvaluateWithContext(ctx context.Context, message string) (st
 		}
 	}
 
+	// PII scanning on request arguments
+	if e.piiScanner != nil {
+		select {
+		case <-ctx.Done():
+			return Deny, "evaluation timeout exceeded"
+		default:
+		}
+		decoded := decodeJSONStrings(rpc.Params)
+		if blocked, reason := e.piiScanner.ScanRequest(rpc.Method, decoded); blocked {
+			return Deny, reason
+		}
+	}
+
 	// If method was explicitly in the allowlist and passed all security scans, allow it
 	if inAllowlist {
 		return Allow, "tool in allowlist, scans passed"
@@ -300,6 +321,13 @@ func (e *Evaluator) EvaluateResponse(ctx context.Context, method string, respons
 	// Secrets scanning on responses (detect leaked credentials)
 	if e.secretsScanner != nil {
 		if blocked, reason := e.secretsScanner.ScanResponse(method, responseBody); blocked {
+			return Deny, reason
+		}
+	}
+
+	// PII scanning on responses (detect leaked personal data)
+	if e.piiScanner != nil {
+		if blocked, reason := e.piiScanner.ScanResponse(method, responseBody); blocked {
 			return Deny, reason
 		}
 	}

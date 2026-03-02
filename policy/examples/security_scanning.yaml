@@ -64,3 +64,19 @@ malware_scan:
     - script_detection
   entropy_threshold: 7.0
   max_decoded_size: 10485760
+
+pii_scan:
+  enabled: true
+  scan_requests: true
+  scan_responses: true
+  action: redact           # "redact" replaces PII with placeholders; "block" denies entirely
+  min_confidence: medium   # "low" catches more (inc. IPs), "high" reduces false positives
+  # Omit 'rules' to enable all categories, or list specific ones:
+  # rules:
+  #   - email
+  #   - phone
+  #   - ssn
+  #   - credit_card
+  exclude_tools:
+    - crm.lookup
+    - user.profile
