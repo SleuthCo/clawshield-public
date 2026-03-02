@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -459,5 +460,162 @@ func TestLoad_EvaluationTimeoutBoundaries(t *testing.T) {
 				t.Errorf("EvaluationTimeoutMs = %d, want %d", policy.EvaluationTimeoutMs, tt.wantValue)
 			}
 		})
+	}
+}
+
+// =============================================================================
+// Helper function for SIEM config tests
+// =============================================================================
+
+func writeTempPolicy(t *testing.T, content string) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "policy.yaml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp policy: %v", err)
+	}
+	return path
+}
+
+// =============================================================================
+// SIEM Config Tests
+// =============================================================================
+
+func TestLoad_SIEMConfig_ValidWebhook(t *testing.T) {
+	yaml := `
+default_action: allow
+siem:
+  enabled: true
+  transport: webhook
+  webhook_url: "https://siem.example.com/events"
+  min_severity: 4
+`
+	tmpFile := writeTempPolicy(t, yaml)
+	defer os.Remove(tmpFile)
+
+	policy, err := Load(tmpFile)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if policy.SIEM == nil {
+		t.Fatalf("SIEM should not be nil")
+	}
+	if policy.SIEM.Enabled != true {
+		t.Errorf("SIEM.Enabled = %v, want true", policy.SIEM.Enabled)
+	}
+	if policy.SIEM.Transport != "webhook" {
+		t.Errorf("SIEM.Transport = %q, want webhook", policy.SIEM.Transport)
+	}
+	if policy.SIEM.WebhookURL != "https://siem.example.com/events" {
+		t.Errorf("SIEM.WebhookURL = %q, want https://siem.example.com/events", policy.SIEM.WebhookURL)
+	}
+	if policy.SIEM.MinSeverity != 4 {
+		t.Errorf("SIEM.MinSeverity = %d, want 4", policy.SIEM.MinSeverity)
+	}
+}
+
+func TestLoad_SIEMConfig_ValidSyslog(t *testing.T) {
+	yaml := `
+default_action: allow
+siem:
+  enabled: true
+  transport: syslog
+  syslog_address: "siem.company.com:514"
+`
+	tmpFile := writeTempPolicy(t, yaml)
+	defer os.Remove(tmpFile)
+
+	policy, err := Load(tmpFile)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if policy.SIEM.Transport != "syslog" {
+		t.Errorf("SIEM.Transport = %q, want syslog", policy.SIEM.Transport)
+	}
+	if policy.SIEM.SyslogAddress != "siem.company.com:514" {
+		t.Errorf("SIEM.SyslogAddress = %q, want siem.company.com:514", policy.SIEM.SyslogAddress)
+	}
+	if policy.SIEM.MinSeverity != 4 {
+		t.Errorf("SIEM.MinSeverity = %d, want 4 (default)", policy.SIEM.MinSeverity)
+	}
+}
+
+func TestLoad_SIEMConfig_WebhookRequiresHTTPS(t *testing.T) {
+	yaml := `
+default_action: allow
+siem:
+  enabled: true
+  transport: webhook
+  webhook_url: "http://insecure.example.com/events"
+`
+	tmpFile := writeTempPolicy(t, yaml)
+	defer os.Remove(tmpFile)
+
+	_, err := Load(tmpFile)
+	if err == nil {
+		t.Fatal("Load() should reject insecure webhook URL, want error")
+	}
+	if !strings.Contains(err.Error(), "HTTPS") {
+		t.Errorf("error should mention HTTPS: %v", err)
+	}
+}
+
+func TestLoad_SIEMConfig_SyslogRequiresAddress(t *testing.T) {
+	yaml := `
+default_action: allow
+siem:
+  enabled: true
+  transport: syslog
+`
+	tmpFile := writeTempPolicy(t, yaml)
+	defer os.Remove(tmpFile)
+
+	_, err := Load(tmpFile)
+	if err == nil {
+		t.Fatal("Load() should require syslog_address for syslog transport, want error")
+	}
+	if !strings.Contains(err.Error(), "syslog_address") {
+		t.Errorf("error should mention syslog_address: %v", err)
+	}
+}
+
+func TestLoad_SIEMConfig_InvalidTransport(t *testing.T) {
+	yaml := `
+default_action: allow
+siem:
+  enabled: true
+  transport: kafka
+`
+	tmpFile := writeTempPolicy(t, yaml)
+	defer os.Remove(tmpFile)
+
+	_, err := Load(tmpFile)
+	if err == nil {
+		t.Fatal("Load() should reject invalid transport, want error")
+	}
+	if !strings.Contains(err.Error(), "syslog") || !strings.Contains(err.Error(), "webhook") {
+		t.Errorf("error should mention valid transports (syslog, webhook): %v", err)
+	}
+}
+
+func TestLoad_SIEMConfig_DisabledSkipsValidation(t *testing.T) {
+	yaml := `
+default_action: allow
+siem:
+  enabled: false
+  transport: invalid
+`
+	tmpFile := writeTempPolicy(t, yaml)
+	defer os.Remove(tmpFile)
+
+	policy, err := Load(tmpFile)
+	if err != nil {
+		t.Fatalf("Load() should not validate disabled SIEM: %v", err)
+	}
+	if policy.SIEM == nil {
+		t.Fatalf("SIEM should not be nil")
+	}
+	if policy.SIEM.Enabled != false {
+		t.Errorf("SIEM.Enabled = %v, want false", policy.SIEM.Enabled)
 	}
 }

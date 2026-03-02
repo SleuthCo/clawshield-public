@@ -201,6 +201,13 @@ clawshield-audit --db /var/lib/clawshield/audit.db --rule-id sqli
 
 See [docs/audit-log-format.md](docs/audit-log-format.md) for the full schema and [Decision Explainability](docs/audit-log-format.md#decision-explainability) for forensic query details.
 
+**SIEM Integration:**
+- Real-time forwarding of Critical and High severity events to enterprise SIEM systems
+- [OCSF v1.1](https://schema.ocsf.io/) Detection Finding format for universal SIEM compatibility
+- Syslog (RFC 5424 over TCP/TLS) and webhook (HTTPS POST) transports
+- Configurable severity threshold — default forwards only High (4) and Critical (5) alerts
+- See [docs/audit-log-format.md](docs/audit-log-format.md#siem-integration) for configuration
+
 ### Network Firewall (optional)
 
 iptables-based egress firewall that restricts which domains/IPs agents can reach:

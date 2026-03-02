@@ -29,18 +29,25 @@ type auditEntry struct {
 	toolCall *types.ToolCall
 }
 
+// SIEMForwarder is the interface for forwarding decisions to a SIEM system.
+// This interface is defined here to avoid circular imports with the siem package.
+type SIEMForwarder interface {
+	Forward(dec *types.Decision)
+}
+
 // Writer is an async, batched SQLite writer for audit logs.
 type Writer struct {
-	db       *sql.DB
-	dbPath   string
-	mu       sync.Mutex
-	queue    chan auditEntry
-	stop     chan struct{}
-	wg       sync.WaitGroup
-	batch    []auditEntry
-	closed   atomic.Bool
-	flushed  int64
-	dropped  atomic.Int64
+	db             *sql.DB
+	dbPath         string
+	mu             sync.Mutex
+	queue          chan auditEntry
+	stop           chan struct{}
+	wg             sync.WaitGroup
+	batch          []auditEntry
+	closed         atomic.Bool
+	flushed        int64
+	dropped        atomic.Int64
+	siemForwarder  SIEMForwarder
 }
 
 // NewWriter creates a new async SQLite writer.
@@ -84,6 +91,11 @@ func (w *Writer) enqueue(entry auditEntry) error {
 		return fmt.Errorf("writer is closed")
 	}
 
+	// Forward to SIEM in real-time (before SQLite batching)
+	if w.siemForwarder != nil && entry.decision != nil {
+		w.siemForwarder.Forward(entry.decision)
+	}
+
 	select {
 	case w.queue <- entry:
 		return nil
@@ -115,6 +127,13 @@ func (w *Writer) Close() error {
 			return w.flushBatch()
 		}
 	}
+}
+
+// SetSIEMForwarder attaches a SIEM forwarder to the writer.
+// When set, every decision written to the audit log is also forwarded
+// to the SIEM system in real-time (before batching to SQLite).
+func (w *Writer) SetSIEMForwarder(forwarder SIEMForwarder) {
+	w.siemForwarder = forwarder
 }
 
 // Dropped returns the number of dropped audit entries.

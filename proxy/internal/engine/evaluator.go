@@ -39,6 +39,25 @@ type Policy struct {
 
 	// Cross-layer adaptive response configuration
 	Adaptive *types.AdaptiveConfig `yaml:"adaptive"`
+
+	// SIEM log forwarding configuration
+	SIEM *SIEMConfig `yaml:"siem"`
+}
+
+// SIEMConfig holds configuration for the SIEM log forwarder.
+// Defined here to avoid circular imports between engine and siem packages.
+type SIEMConfig struct {
+	Enabled           bool   `yaml:"enabled"`
+	MinSeverity       int    `yaml:"min_severity"`        // OCSF severity_id threshold (default: 4 = High)
+	Transport         string `yaml:"transport"`            // "syslog" or "webhook"
+	SyslogAddress     string `yaml:"syslog_address"`       // e.g. "siem.company.com:514"
+	SyslogTLS         bool   `yaml:"syslog_tls"`
+	SyslogCertFile    string `yaml:"syslog_cert_file"`
+	SyslogKeyFile     string `yaml:"syslog_key_file"`
+	WebhookURL        string `yaml:"webhook_url"`
+	WebhookAuthHeader string `yaml:"webhook_auth_header"` // e.g. "Bearer token123"
+	WebhookTimeoutMs  int    `yaml:"webhook_timeout_ms"`  // default: 5000
+	QueueSize         int    `yaml:"queue_size"`           // default: 10000
 }
 
 // ChannelPolicy defines per-channel tool restrictions for OpenClaw.
