@@ -28,7 +28,7 @@ import (
 	"github.com/SleuthCo/clawshield/proxy/internal/audit/hashlined"
 	"github.com/SleuthCo/clawshield/proxy/internal/audit/sqlite"
 	"github.com/SleuthCo/clawshield/proxy/internal/engine"
-	"github.com/SleuthCo/clawshield/shared/bus"
+	"github.com/SleuthCo/clawshield/proxy/internal/metrics"
 	"github.com/SleuthCo/clawshield/shared/types"
 )
 
@@ -47,6 +47,7 @@ type httpProxy struct {
 	standaloneMode bool
 	startTime      time.Time
 	controlUIDir   string
+	metrics        *metrics.Collector
 	eventBus       *bus.EventBus // Cross-layer event bus (nil if not configured)
 }
 
@@ -81,12 +82,14 @@ func runHTTPProxy(cfg *engine.Policy, evaluator *engine.Evaluator, auditWriter *
 		standaloneMode: standalone,
 		startTime:      time.Now(),
 		controlUIDir:   controlUIDir,
+		metrics:        metrics.New(),
 		eventBus:       eventBus,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/audit", p.handleAuditAPI)          // M3: Audit query API
 	mux.HandleFunc("/api/v1/status", p.handleStatusAPI)        // Status API (dashboard)
+	mux.Handle("/metrics", p.metrics.Handler())                // Prometheus metrics endpoint
 	mux.HandleFunc("/v1/studio/ticket", p.handleStudioTicket) // Studio deep-link ticket generation
 
 	if standalone {
@@ -516,6 +519,7 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 		}
 
 		// Full evaluator pipeline (denylist, allowlist, arg filters, vuln scan, injection scan)
+		evalStart := time.Now()
 		evalCtx, evalCancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
 		decision, reason := p.evaluator.EvaluateWithContext(evalCtx, message)
 		evalCancel()
@@ -528,8 +532,12 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 		// Audit log
 		p.logDecision(method, string(rpc.Params), decision, reason)
 
+		p.metrics.RecordRequest()
+		p.metrics.RecordEvaluationLatency(time.Since(evalStart))
+
 		if decision == engine.Deny {
 			log.Printf("BLOCKED: method=%s reason=%s", method, reason)
+			p.metrics.RecordDeny(method, reason)
 			// Publish cross-layer event for blocked requests
 			evtType, sev := classifyDenyReason(reason)
 			p.publishSecurityEvent(evtType, sev, method, reason)
@@ -537,6 +545,7 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 			continue
 		}
 
+		p.metrics.RecordAllow()
 		log.Printf("ALLOWED: method=%s", method)
 
 		// Inject canary token into outbound params if enabled.
@@ -594,22 +603,28 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 		scannerType := ""
 
 		if p.evaluator.InjectionDetector() != nil || p.evaluator.MalwareScanner() != nil || p.evaluator.SecretsScanner() != nil || p.evaluator.PIIScanner() != nil {
+			p.metrics.RecordResponseScanned()
 			evalCtx, evalCancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
 			respResult := p.evaluator.EvaluateResponse(evalCtx, respMethod, message)
 			evalCancel()
 			respDecision = respResult.Decision
 			respReason = respResult.Reason
 			if respResult.Decision == engine.Deny {
+				p.metrics.RecordResponseBlocked()
 				if len(respResult.Reason) > 0 {
 					if respResult.Reason[0] == 'p' {
 						scannerType = "injection"
+						p.metrics.RecordInjectionBlocked()
 					} else if respResult.Reason[0] == 'm' {
 						scannerType = "malware"
+						p.metrics.RecordMalwareBlocked()
 					} else if respResult.Reason[0] == 's' {
 						scannerType = "secrets"
+						p.metrics.RecordSecretsBlocked()
 					}
 				}
 			} else if respResult.WasRedacted {
+				p.metrics.RecordResponseRedacted()
 				// Replace the response data with the redacted version
 				message = respResult.RedactedBody
 				data = []byte(respResult.RedactedBody)

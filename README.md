@@ -122,6 +122,22 @@ go build -o clawshield-setup
 
 ## What's Included
 
+### Observability
+
+ClawShield exposes a Prometheus-compatible `/metrics` endpoint for real-time monitoring:
+
+```bash
+curl http://localhost:18789/metrics
+```
+
+Key metrics:
+- `clawshield_requests_total` — Total requests evaluated
+- `clawshield_decisions_allowed_total` / `_denied_total` / `_redacted_total` — Decision outcomes
+- `clawshield_scanner_detections_total{scanner,action}` — Detections by scanner type
+- `clawshield_evaluation_duration_seconds` — Evaluation latency histogram
+- `clawshield_active_connections` — Current WebSocket connections
+- `clawshield_crosslayer_events_*` — Cross-layer event bus activity
+
 ### Security Proxy
 
 The core of ClawShield. An HTTP reverse proxy that intercepts all traffic between users and the AI gateway.
