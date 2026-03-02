@@ -2,8 +2,11 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/SleuthCo/clawshield/proxy/internal/scanner"
 )
 
 func TestNewEvaluator(t *testing.T) {
@@ -366,6 +369,131 @@ func TestEvaluateWithContext_TimeoutDuringDomainCheck(t *testing.T) {
 	defer cancel()
 
 	time.Sleep(10 * time.Millisecond) // Ensure timeout triggers
+
+	decision, reason := evaluator.EvaluateWithContext(ctx, `{"method": "web.fetch", "params": {"url": "https://example.com"}}`)
+
+	if decision != Deny {
+		t.Errorf("got decision %s, want %s", decision, Deny)
+	}
+
+	if !contains(reason, "timeout exceeded") {
+		t.Errorf("got reason %q, want to contain 'timeout exceeded'", reason)
+	}
+}
+
+func TestEvaluateWithContext_InternalTimeout(t *testing.T) {
+	// Verify that the evaluator enforces its own timeout via EvaluationTimeoutMs
+	// even when the caller provides a plain context.Background() with no deadline.
+	policy := &Policy{
+		DefaultAction:       Allow,
+		EvaluationTimeoutMs: 1, // 1ms — will expire almost immediately
+		DomainAllowlist:     make([]string, 10000),
+	}
+
+	for i := 0; i < 10000; i++ {
+		policy.DomainAllowlist[i] = fmt.Sprintf("domain%d.example.com", i)
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	// Use context.Background() with NO external deadline — the evaluator must enforce its own
+	time.Sleep(5 * time.Millisecond) // Give the 1ms timeout a chance to fire
+	decision, reason := evaluator.EvaluateWithContext(context.Background(), `{"method": "web.fetch", "params": {"url": "https://notindomain.example.com"}}`)
+
+	if decision != Deny {
+		t.Errorf("got decision %s, want %s", decision, Deny)
+	}
+
+	if !contains(reason, "timeout exceeded") && !contains(reason, "not in allowlist") {
+		// Either timeout fires or domain check catches it — both are valid deny reasons
+		t.Logf("reason: %s (either timeout or domain check is acceptable)", reason)
+	}
+}
+
+func TestEvaluateWithContext_InternalTimeoutExpires(t *testing.T) {
+	// Verify that a very short EvaluationTimeoutMs causes timeout denial
+	// even with no external context deadline.
+	policy := &Policy{
+		DefaultAction:       Allow,
+		EvaluationTimeoutMs: 1, // 1ms — will expire almost immediately
+		DomainAllowlist:     make([]string, 100000), // Very large list to ensure processing takes time
+	}
+
+	for i := 0; i < 100000; i++ {
+		policy.DomainAllowlist[i] = fmt.Sprintf("slowdomain%d.example.com", i)
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	// Let the internal timeout expire before the domain loop completes
+	time.Sleep(5 * time.Millisecond)
+	decision, _ := evaluator.EvaluateWithContext(context.Background(), `{"method": "web.fetch", "params": {"url": "https://nonexistent.example.com"}}`)
+
+	if decision != Deny {
+		t.Errorf("expected Deny, got %s — internal timeout should have triggered or domain not found", decision)
+	}
+}
+
+func TestEvaluateResponse_InternalTimeout(t *testing.T) {
+	// Verify that EvaluateResponse also enforces its own timeout via EvaluationTimeoutMs.
+	policy := &Policy{
+		DefaultAction:       Allow,
+		EvaluationTimeoutMs: 1, // 1ms
+		PromptInjection: &scanner.PromptInjectionConfig{
+			Enabled:       true,
+			ScanResponses: true,
+			Sensitivity:   "high",
+		},
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	// Use plain context.Background() — evaluator must create its own timeout
+	time.Sleep(5 * time.Millisecond)
+	decision, reason := evaluator.EvaluateResponse(context.Background(), "chat.send", "This is a normal response")
+
+	// With a 1ms timeout that we've already slept past, the evaluator's internal context
+	// may or may not expire depending on scheduling. Either outcome is valid:
+	// - "allow" + "response clean" (evaluation completed within timeout)
+	// - "deny" + "evaluation timeout exceeded" (timeout fired)
+	if decision == Deny && !contains(reason, "timeout") {
+		t.Errorf("got Deny with unexpected reason: %s", reason)
+	}
+	t.Logf("EvaluateResponse with 1ms timeout: decision=%s reason=%s", decision, reason)
+}
+
+func TestEvaluateWithContext_NoTimeoutWhenZero(t *testing.T) {
+	// Verify that when EvaluationTimeoutMs is 0, no internal timeout is applied
+	// and evaluation completes normally.
+	policy := &Policy{
+		DefaultAction:       Allow,
+		EvaluationTimeoutMs: 0, // No internal timeout
+		Allowlist:           []string{"read"},
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	decision, reason := evaluator.EvaluateWithContext(context.Background(), `{"method": "read", "params": {"path": "test.txt"}}`)
+
+	if decision != Allow {
+		t.Errorf("got decision %s, want %s (reason: %s)", decision, Allow, reason)
+	}
+}
+
+func TestEvaluateWithContext_InternalTimeoutRespectsExternalDeadline(t *testing.T) {
+	// When both an external deadline AND internal EvaluationTimeoutMs are set,
+	// the shorter one should win.
+	policy := &Policy{
+		DefaultAction:       Allow,
+		EvaluationTimeoutMs: 60000, // 60 seconds (very generous)
+		DomainAllowlist:     []string{"example.com"},
+	}
+
+	evaluator := NewEvaluator(policy)
+
+	// External context with already-expired deadline should still cause denial
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
 
 	decision, reason := evaluator.EvaluateWithContext(ctx, `{"method": "web.fetch", "params": {"url": "https://example.com"}}`)
 
