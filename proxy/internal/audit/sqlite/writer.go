@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SleuthCo/clawshield/proxy/internal/audit/crypto"
 	"github.com/SleuthCo/clawshield/shared/types"
 )
 
@@ -48,6 +49,7 @@ type Writer struct {
 	flushed        int64
 	dropped        atomic.Int64
 	siemForwarder  SIEMForwarder
+	encryptor      *crypto.FieldEncryptor
 }
 
 // NewWriter creates a new async SQLite writer.
@@ -134,6 +136,18 @@ func (w *Writer) Close() error {
 // to the SIEM system in real-time (before batching to SQLite).
 func (w *Writer) SetSIEMForwarder(forwarder SIEMForwarder) {
 	w.siemForwarder = forwarder
+}
+
+// SetEncryptor attaches a field encryptor to the writer.
+// When set, sensitive fields (decision_details, arguments_hash,
+// tool_calls.request_json, tool_calls.response_json) are encrypted
+// with AES-256-GCM before being written to SQLite.
+//
+// SECURITY: Encryption is applied at the storage layer only. SIEM
+// forwarding receives unencrypted data so SOC analysts can process
+// events in real-time without needing the encryption key.
+func (w *Writer) SetEncryptor(enc *crypto.FieldEncryptor) {
+	w.encryptor = enc
 }
 
 // Dropped returns the number of dropped audit entries.
@@ -245,11 +259,33 @@ func (w *Writer) flushBatch() error {
 		if detailsJSON != nil {
 			detailsBytes = []byte(detailsJSON)
 		}
+
+		// SECURITY: Encrypt sensitive fields before storage.
+		// Non-sensitive fields (timestamp, session_id, tool, decision, reason,
+		// policy_version, scanner_type, correlation_id, classification, source)
+		// remain plaintext for queryability.
+		argsHashForStorage := dec.ArgumentsHash
+		if w.encryptor != nil {
+			if detailsBytes != nil {
+				detailsBytes, err = w.encryptor.Encrypt(detailsBytes)
+				if err != nil {
+					return fmt.Errorf("encrypt decision_details: %w", err)
+				}
+			}
+			if argsHashForStorage != "" {
+				encArgHash, err := w.encryptor.EncryptString(argsHashForStorage)
+				if err != nil {
+					return fmt.Errorf("encrypt arguments_hash: %w", err)
+				}
+				argsHashForStorage = string(encArgHash)
+			}
+		}
+
 		result, err := decStmt.ExecContext(context.Background(),
 			dec.Timestamp,
 			dec.SessionID,
 			dec.Tool,
-			dec.ArgumentsHash,
+			argsHashForStorage,
 			dec.Decision,
 			dec.Reason,
 			dec.PolicyVersion,
@@ -283,10 +319,31 @@ func (w *Writer) flushBatch() error {
 			if createdAt.IsZero() {
 				createdAt = dec.Timestamp
 			}
+
+			// SECURITY: Encrypt tool call request/response JSON before storage.
+			// These fields contain the full MCP request and response bodies,
+			// which may include secrets, PII, and credentials detected by scanners.
+			reqJSON := entry.toolCall.RequestJSON
+			respJSON := entry.toolCall.ResponseJSON
+			if w.encryptor != nil {
+				if reqJSON != nil {
+					reqJSON, err = w.encryptor.Encrypt(reqJSON)
+					if err != nil {
+						return fmt.Errorf("encrypt request_json: %w", err)
+					}
+				}
+				if respJSON != nil {
+					respJSON, err = w.encryptor.Encrypt(respJSON)
+					if err != nil {
+						return fmt.Errorf("encrypt response_json: %w", err)
+					}
+				}
+			}
+
 			_, err = tcStmt.ExecContext(context.Background(),
 				decisionID,
-				entry.toolCall.RequestJSON,
-				entry.toolCall.ResponseJSON,
+				reqJSON,
+				respJSON,
 				createdAt)
 			if err != nil {
 				return fmt.Errorf("insert tool_call: %w", err)
