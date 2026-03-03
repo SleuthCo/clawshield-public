@@ -21,7 +21,7 @@ type Store struct {
 // NewStore creates a new Store with the given database file path.
 // If dbPath is ":memory:", an in-memory SQLite database is used.
 func NewStore(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dbPath+"?_busy_timeout=5000&_journal_mode=WAL")
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -119,6 +119,38 @@ func (s *Store) InitPolicySchema() error {
 
 	_, err := s.db.Exec(schema)
 	return err
+}
+
+// EnrollmentToken represents a stored enrollment token.
+type EnrollmentToken struct {
+	Token     string `json:"token"`
+	CreatedAt string `json:"created_at"`
+	Used      bool   `json:"used"`
+	UsedBy    string `json:"used_by,omitempty"`
+	UsedAt    string `json:"used_at,omitempty"`
+}
+
+// ListEnrollmentTokens returns all enrollment tokens.
+func (s *Store) ListEnrollmentTokens() ([]EnrollmentToken, error) {
+	rows, err := s.db.Query(
+		`SELECT token, created_at, used, COALESCE(used_by,''), COALESCE(used_at,'')
+		 FROM enrollment_tokens ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tokens []EnrollmentToken
+	for rows.Next() {
+		var t EnrollmentToken
+		var used int
+		if err := rows.Scan(&t.Token, &t.CreatedAt, &used, &t.UsedBy, &t.UsedAt); err != nil {
+			return nil, err
+		}
+		t.Used = used != 0
+		tokens = append(tokens, t)
+	}
+	return tokens, rows.Err()
 }
 
 // CreateEnrollmentToken stores a new enrollment token.

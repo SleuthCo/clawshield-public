@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClawShield Hub</title>
+<link rel="icon" href="data:;base64,=">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#060b18;--surface:#0d1a2f;--border:#163058;
+  --primary:#00d4ff;--success:#00e87b;--danger:#ff3366;--warning:#ffaa00;
+  --text:#d0e4ff;--muted:#4a7aab;--dim:#1a3560;
+}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+a{color:var(--primary);text-decoration:none}
+
+.header{display:flex;align-items:center;padding:0 16px;height:48px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px;letter-spacing:1px;color:var(--primary)}
+.logo svg{width:24px;height:24px}
+.tabs{display:flex;gap:2px;margin-left:24px}
+.tab{padding:8px 14px;border-radius:6px 6px 0 0;cursor:pointer;font-size:12px;font-weight:600;color:var(--muted);border:1px solid transparent;border-bottom:none;transition:all .15s;user-select:none}
+.tab:hover{color:var(--text);background:rgba(0,217,255,.05)}
+.tab.active{color:var(--primary);background:var(--bg);border-color:var(--border)}
+.tab kbd{font-size:10px;padding:1px 4px;border-radius:3px;background:var(--dim);color:var(--muted);margin-left:4px;font-family:inherit}
+.hub-status{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--success);box-shadow:0 0 6px var(--success)}
+.status-dot.offline{background:var(--danger);box-shadow:0 0 6px var(--danger)}
+
+.content{flex:1;overflow:hidden;position:relative}
+.panel{position:absolute;inset:0;display:none;flex-direction:column;overflow:auto;padding:16px}
+.panel.active{display:flex}
+
+/* Cards */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px}
+.card h3{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:12px}
+.cards-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:16px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center}
+.stat-card .stat-num{font-size:32px;font-weight:700;font-family:'Cascadia Code','Fira Code',monospace;line-height:1.2}
+.stat-card .stat-label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-top:4px}
+
+/* Tables */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px 6px;color:var(--muted);font-weight:600;text-transform:uppercase;font-size:11px;letter-spacing:.5px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0}
+td{padding:6px;border-bottom:1px solid rgba(30,41,59,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px}
+tr:hover td{background:rgba(0,217,255,.03)}
+
+/* Badges */
+.badge{padding:2px 6px;border-radius:3px;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.5px;display:inline-block}
+.badge-healthy{background:rgba(0,255,136,.12);color:var(--success)}
+.badge-stale{background:rgba(255,170,0,.12);color:var(--warning)}
+.badge-unhealthy,.badge-revoked{background:rgba(255,51,102,.12);color:var(--danger)}
+.badge-active{background:rgba(0,217,255,.12);color:var(--primary)}
+.badge-rotated{background:rgba(74,122,171,.2);color:var(--muted)}
+.badge-draft{background:rgba(74,122,171,.2);color:var(--muted)}
+.badge-approved{background:rgba(0,255,136,.12);color:var(--success)}
+.badge-published{background:rgba(0,217,255,.12);color:var(--primary)}
+.badge-superseded{background:rgba(74,122,171,.2);color:var(--muted)}
+.badge-pending{background:rgba(255,170,0,.12);color:var(--warning)}
+.badge-completed{background:rgba(0,255,136,.12);color:var(--success)}
+.badge-failed{background:rgba(255,51,102,.12);color:var(--danger)}
+
+/* Tags */
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;background:var(--dim);color:var(--muted);margin-right:4px}
+
+/* Buttons */
+.btn{padding:6px 14px;border-radius:4px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-weight:600;cursor:pointer;transition:all .15s}
+.btn:hover{background:rgba(0,217,255,.1);border-color:var(--primary)}
+.btn-primary{background:rgba(0,217,255,.15);border-color:var(--primary);color:var(--primary)}
+.btn-primary:hover{background:rgba(0,217,255,.25)}
+.btn-danger{border-color:var(--danger);color:var(--danger)}
+.btn-danger:hover{background:rgba(255,51,102,.15)}
+.btn-sm{padding:3px 8px;font-size:11px}
+
+/* Forms */
+.form-row{display:flex;gap:8px;margin-bottom:12px;align-items:center}
+.form-row label{font-size:12px;color:var(--muted);min-width:80px}
+.form-row input,.form-row select,.form-row textarea{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:12px;flex:1}
+.form-row textarea{font-family:'Cascadia Code','Fira Code',monospace;min-height:100px;resize:vertical}
+
+/* Toolbar */
+.toolbar{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.toolbar input,.toolbar select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px}
+
+/* Modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
+.modal-overlay.active{display:flex}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;min-width:400px;max-width:600px;max-height:80vh;overflow:auto}
+.modal h3{font-size:15px;color:var(--primary);margin-bottom:16px}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+
+/* Stat row */
+.stat-row{display:flex;justify-content:space-between;padding:6px 0;font-size:13px}
+.stat-value{font-weight:700;color:var(--primary);font-family:'Cascadia Code','Fira Code',monospace}
+
+/* Bar chart */
+.bar-chart{display:flex;align-items:flex-end;gap:8px;height:120px;margin-top:12px}
+.bar-col{display:flex;flex-direction:column;align-items:center;flex:1;gap:4px}
+.bar{width:100%;border-radius:3px 3px 0 0;min-height:4px;transition:height .3s}
+.bar-label{font-size:10px;color:var(--muted);text-transform:uppercase}
+.bar-value{font-size:11px;font-weight:700;font-family:'Cascadia Code','Fira Code',monospace}
+
+/* Progress */
+.wave-progress{display:flex;gap:4px;height:24px;border-radius:4px;overflow:hidden;background:var(--dim)}
+.wave-seg{display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;transition:width .3s}
+
+/* Empty state */
+.empty-state{text-align:center;padding:48px;color:var(--muted);font-size:14px}
+
+/* Footer */
+.footer{display:flex;align-items:center;padding:0 16px;height:32px;background:var(--surface);border-top:1px solid var(--border);font-size:11px;color:var(--muted);flex-shrink:0;gap:16px}
+.footer .stats{margin-left:auto;display:flex;gap:16px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    CLAWSHIELD HUB
+  </div>
+  <div class="tabs">
+    <div class="tab active" data-tab="dashboard">Dashboard <kbd>1</kbd></div>
+    <div class="tab" data-tab="fleet">Fleet <kbd>2</kbd></div>
+    <div class="tab" data-tab="policies">Policies <kbd>3</kbd></div>
+    <div class="tab" data-tab="keys">Keys <kbd>4</kbd></div>
+    <div class="tab" data-tab="updates">Updates <kbd>5</kbd></div>
+    <div class="tab" data-tab="tokens">Tokens <kbd>6</kbd></div>
+  </div>
+  <div class="hub-status">
+    <span class="status-dot" id="hub-dot"></span>
+    <span id="hub-text">Connecting...</span>
+  </div>
+</div>
+
+<div class="content">
+  <!-- Dashboard Tab -->
+  <div id="dashboard-panel" class="panel active">
+    <div class="cards-row" id="dash-stats"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="card">
+        <h3>Version Distribution</h3>
+        <div id="dash-versions"><div class="empty-state">Loading...</div></div>
+      </div>
+      <div class="card">
+        <h3>Scanner Detections</h3>
+        <div class="bar-chart" id="dash-scanners"></div>
+      </div>
+      <div class="card">
+        <h3>Policy Compliance</h3>
+        <div id="dash-compliance"><div class="empty-state">Loading...</div></div>
+      </div>
+      <div class="card">
+        <h3>Security Metrics</h3>
+        <div id="dash-security"><div class="empty-state">Loading...</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fleet Tab -->
+  <div id="fleet-panel" class="panel">
+    <div class="toolbar">
+      <input type="text" id="fleet-search" placeholder="Search hostname...">
+      <select id="fleet-status-filter">
+        <option value="">All Status</option>
+        <option value="healthy">Healthy</option>
+        <option value="stale">Stale</option>
+        <option value="unhealthy">Unhealthy</option>
+      </select>
+      <input type="text" id="fleet-tag-filter" placeholder="Filter by tag...">
+      <span style="margin-left:auto;font-size:12px;color:var(--muted)">Agents: <strong id="fleet-count">0</strong></span>
+    </div>
+    <div class="card" style="flex:1;overflow:auto;padding:0">
+      <table>
+        <thead><tr><th style="width:30px"></th><th>Hostname</th><th>Version</th><th>Policy</th><th>Status</th><th>Tags</th><th>Last Check-in</th><th>Actions</th></tr></thead>
+        <tbody id="fleet-body"></tbody>
+      </table>
+      <div id="fleet-empty" class="empty-state" style="display:none">No agents registered. Create an enrollment token and start an agent.</div>
+    </div>
+  </div>
+
+  <!-- Policies Tab -->
+  <div id="policies-panel" class="panel">
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="showModal('group-modal')">+ New Group</button>
+      <button class="btn btn-primary" onclick="showModal('version-modal')">+ New Version</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 2fr;gap:16px;flex:1;overflow:hidden">
+      <div class="card" style="overflow:auto">
+        <h3>Policy Groups</h3>
+        <div id="policy-groups"><div class="empty-state">No groups yet</div></div>
+      </div>
+      <div class="card" style="overflow:auto">
+        <h3>Policy Versions</h3>
+        <div id="policy-versions"><div class="empty-state">Select a group or create a version</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Keys Tab -->
+  <div id="keys-panel" class="panel">
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="showModal('key-modal')">+ New Key</button>
+    </div>
+    <div class="card" style="flex:1;overflow:auto;padding:0">
+      <table>
+        <thead><tr><th>Key ID</th><th>Group</th><th>Status</th><th>Created</th><th>Expires</th><th>Actions</th></tr></thead>
+        <tbody id="keys-body"></tbody>
+      </table>
+      <div id="keys-empty" class="empty-state" style="display:none">No encryption keys. Create one to enable audit log encryption.</div>
+    </div>
+  </div>
+
+  <!-- Updates Tab -->
+  <div id="updates-panel" class="panel">
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="showModal('release-modal')">+ New Release</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;flex:1;overflow:hidden">
+      <div class="card" style="overflow:auto">
+        <h3>Releases</h3>
+        <div id="releases-list"><div class="empty-state">No releases</div></div>
+      </div>
+      <div class="card" style="overflow:auto">
+        <h3>Rollouts</h3>
+        <div id="rollouts-list"><div class="empty-state">No rollouts</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tokens Tab -->
+  <div id="tokens-panel" class="panel">
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="createToken()">+ Generate Token</button>
+      <span style="margin-left:auto;font-size:12px;color:var(--muted)">Tokens: <strong id="token-count">0</strong></span>
+    </div>
+    <div class="card" style="flex:1;overflow:auto;padding:0">
+      <table>
+        <thead><tr><th>Token</th><th>Status</th><th>Created</th><th>Used By</th><th>Used At</th></tr></thead>
+        <tbody id="tokens-body"></tbody>
+      </table>
+      <div id="tokens-empty" class="empty-state" style="display:none">No enrollment tokens. Generate one to enroll a new agent.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Modals -->
+<div class="modal-overlay" id="group-modal">
+  <div class="modal">
+    <h3>Create Policy Group</h3>
+    <div class="form-row"><label>Name</label><input type="text" id="grp-name" placeholder="e.g. Engineering"></div>
+    <div class="form-row"><label>Description</label><input type="text" id="grp-desc" placeholder="Team policy description"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="hideModal('group-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createGroup()">Create</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="version-modal">
+  <div class="modal">
+    <h3>Create Policy Version</h3>
+    <div class="form-row"><label>Group</label><select id="ver-group"></select></div>
+    <div class="form-row"><label>Version</label><input type="text" id="ver-label" placeholder="e.g. v3.0"></div>
+    <div class="form-row"><label>Author</label><input type="text" id="ver-author" placeholder="admin@corp.com"></div>
+    <div class="form-row"><label>Policy YAML</label><textarea id="ver-yaml" placeholder="default_action: deny&#10;allowlist:&#10;  - web_search"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="hideModal('version-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createVersion()">Create Draft</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="key-modal">
+  <div class="modal">
+    <h3>Create Encryption Key</h3>
+    <div class="form-row"><label>Group</label><select id="key-group"></select></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="hideModal('key-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createKey()">Generate Key</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="release-modal">
+  <div class="modal">
+    <h3>Publish Release</h3>
+    <div class="form-row"><label>Version</label><input type="text" id="rel-version" placeholder="e.g. 1.5.0"></div>
+    <div class="form-row"><label>Binary Hash</label><input type="text" id="rel-hash" placeholder="sha256:..."></div>
+    <div class="form-row"><label>Notes</label><input type="text" id="rel-notes" placeholder="Release notes"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="hideModal('release-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createRelease()">Publish</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="approve-modal">
+  <div class="modal">
+    <h3>Approve Policy Version</h3>
+    <div class="form-row"><label>Approver</label><input type="text" id="appr-who" placeholder="reviewer@corp.com"></div>
+    <div class="form-row"><label>Comment</label><input type="text" id="appr-comment" placeholder="LGTM"></div>
+    <input type="hidden" id="appr-version-id">
+    <div class="modal-actions">
+      <button class="btn" onclick="hideModal('approve-modal')">Cancel</button>
+      <button class="btn btn-danger" onclick="approveVersion('rejected')">Reject</button>
+      <button class="btn btn-primary" onclick="approveVersion('approved')">Approve</button>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  <span>ClawShield Management Hub</span>
+  <div class="stats">
+    <span>Agents: <strong id="ft-agents">0</strong></span>
+    <span>Policies: <strong id="ft-policies">0</strong></span>
+    <span>Keys: <strong id="ft-keys">0</strong></span>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // --- Helpers ---
+  function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+  function fmtTime(s) { if (!s || s.startsWith('0001')) return '-'; const d=new Date(s); return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}); }
+  function fmtAgo(s) { if (!s || s.startsWith('0001')) return '-'; const ms=Date.now()-new Date(s).getTime(); if(ms<60000) return Math.floor(ms/1000)+'s ago'; if(ms<3600000) return Math.floor(ms/60000)+'m ago'; if(ms<86400000) return Math.floor(ms/3600000)+'h ago'; return Math.floor(ms/86400000)+'d ago'; }
+  function badge(status) { return '<span class="badge badge-'+esc(status)+'">'+esc(status)+'</span>'; }
+  function tags(arr) { return (arr||[]).map(t=>'<span class="tag">'+esc(t)+'</span>').join(''); }
+
+  async function api(method, path, body) {
+    const opts = {method, headers:{'Content-Type':'application/json'}};
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch('/api/v1'+path, opts);
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch { data = text; }
+    if (!r.ok) throw new Error(data.error || data || r.statusText);
+    return data;
+  }
+
+  // --- Tab switching ---
+  const tabs = document.querySelectorAll('.tab');
+  const panels = document.querySelectorAll('.panel');
+  function switchTab(name) {
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    panels.forEach(p => p.classList.toggle('active', p.id === name + '-panel'));
+    refresh(name);
+  }
+  tabs.forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||e.target.tagName==='TEXTAREA') return;
+    const n = '123456'.indexOf(e.key);
+    if (n >= 0) switchTab(['dashboard','fleet','policies','keys','updates','tokens'][n]);
+  });
+
+  // --- Modals ---
+  window.showModal = function(id) { document.getElementById(id).classList.add('active'); };
+  window.hideModal = function(id) { document.getElementById(id).classList.remove('active'); };
+  document.querySelectorAll('.modal-overlay').forEach(m => {
+    m.addEventListener('click', e => { if (e.target === m) m.classList.remove('active'); });
+  });
+
+  // --- Health check ---
+  let hubOnline = false;
+  async function checkHub() {
+    try {
+      await api('GET', '/health');
+      if (!hubOnline) { hubOnline=true; document.getElementById('hub-dot').classList.remove('offline'); document.getElementById('hub-text').textContent='Online'; }
+    } catch {
+      hubOnline=false; document.getElementById('hub-dot').classList.add('offline'); document.getElementById('hub-text').textContent='Offline';
+    }
+  }
+
+  // --- Data state ---
+  let agents=[], groups=[], versions=[], keys=[], tokens=[], releases=[], rollouts=[], overview={}, security={};
+  let selectedGroupId = '';
+
+  // --- Refresh ---
+  function refresh(tab) {
+    if (tab==='dashboard') { loadDashboard(); }
+    else if (tab==='fleet') { loadFleet(); }
+    else if (tab==='policies') { loadPolicies(); }
+    else if (tab==='keys') { loadKeys(); }
+    else if (tab==='updates') { loadUpdates(); }
+    else if (tab==='tokens') { loadTokens(); }
+  }
+
+  // --- Dashboard ---
+  async function loadDashboard() {
+    try { overview = await api('GET','/dashboard/overview'); } catch { overview={}; }
+    try { security = await api('GET','/dashboard/security'); } catch { security={}; }
+
+    const s = document.getElementById('dash-stats');
+    s.innerHTML = [
+      statCard(overview.total_agents||0, 'Total Agents', '--primary'),
+      statCard(overview.healthy_agents||0, 'Healthy', '--success'),
+      statCard(overview.stale_agents||0, 'Stale', '--warning'),
+      statCard(overview.unhealthy_agents||0, 'Unhealthy', '--danger'),
+      statCard(security.total_decisions||0, 'Decisions', '--primary'),
+      statCard(security.total_denied||0, 'Denied', '--danger'),
+    ].join('');
+
+    // Version distribution
+    const vd = overview.version_distribution || {};
+    const vdEl = document.getElementById('dash-versions');
+    if (Object.keys(vd).length === 0) { vdEl.innerHTML = '<div class="empty-state">No version data</div>'; }
+    else { vdEl.innerHTML = Object.entries(vd).map(([v,c]) => '<div class="stat-row"><span>'+esc(v)+'</span><span class="stat-value">'+c+'</span></div>').join(''); }
+
+    // Scanner detections
+    const sd = security.scanner_detections || {};
+    const scEl = document.getElementById('dash-scanners');
+    const maxDet = Math.max(1, ...Object.values(sd));
+    if (Object.keys(sd).length === 0) { scEl.innerHTML = '<div class="empty-state" style="width:100%">No detections</div>'; }
+    else { scEl.innerHTML = Object.entries(sd).map(([k,v]) => { const h = Math.max(4, (v/maxDet)*100); const colors = {injection:'var(--danger)',pii:'var(--warning)',secrets:'var(--primary)',malware:'#a78bfa'}; return '<div class="bar-col"><span class="bar-value">'+v+'</span><div class="bar" style="height:'+h+'%;background:'+(colors[k]||'var(--primary)')+'"></div><span class="bar-label">'+esc(k)+'</span></div>'; }).join(''); }
+
+    // Policy compliance
+    const pc = overview.policy_compliance || {};
+    const pcEl = document.getElementById('dash-compliance');
+    pcEl.innerHTML = '<div class="stat-row"><span>Compliant</span><span class="stat-value" style="color:var(--success)">'+(pc.compliant||0)+'</span></div>' +
+      '<div class="stat-row"><span>Non-Compliant</span><span class="stat-value" style="color:var(--danger)">'+(pc.non_compliant||0)+'</span></div>' +
+      '<div class="stat-row"><span>Unassigned</span><span class="stat-value">'+(pc.unassigned||0)+'</span></div>';
+
+    // Security metrics
+    const smEl = document.getElementById('dash-security');
+    smEl.innerHTML = '<div class="stat-row"><span>Total Decisions</span><span class="stat-value">'+(security.total_decisions||0)+'</span></div>' +
+      '<div class="stat-row"><span>Total Denied</span><span class="stat-value" style="color:var(--danger)">'+(security.total_denied||0)+'</span></div>' +
+      '<div class="stat-row"><span>Deny Rate</span><span class="stat-value">'+(security.total_decisions ? ((security.total_denied||0)*100/security.total_decisions).toFixed(1) : '0')+'%</span></div>';
+
+    document.getElementById('ft-agents').textContent = overview.total_agents||0;
+  }
+
+  function statCard(num, label, colorVar) {
+    return '<div class="stat-card"><div class="stat-num" style="color:var('+colorVar+')">'+num+'</div><div class="stat-label">'+label+'</div></div>';
+  }
+
+  // --- Fleet ---
+  async function loadFleet() {
+    try {
+      const status = document.getElementById('fleet-status-filter').value;
+      const tag = document.getElementById('fleet-tag-filter').value;
+      let q = '/agents?';
+      if (status) q += 'status='+status+'&';
+      if (tag) q += 'tag='+tag;
+      agents = await api('GET', q) || [];
+    } catch { agents = []; }
+    renderFleet();
+  }
+
+  function renderFleet() {
+    const search = document.getElementById('fleet-search').value.toLowerCase();
+    const filtered = agents.filter(a => !search || a.hostname.toLowerCase().includes(search) || a.agent_id.toLowerCase().includes(search));
+    document.getElementById('fleet-count').textContent = filtered.length;
+    const body = document.getElementById('fleet-body');
+    const empty = document.getElementById('fleet-empty');
+    if (filtered.length === 0) { body.innerHTML = ''; empty.style.display = 'block'; return; }
+    empty.style.display = 'none';
+    body.innerHTML = filtered.map(a => '<tr>' +
+      '<td><span class="status-dot" style="width:6px;height:6px;'+(a.status==='healthy'?'background:var(--success);box-shadow:0 0 4px var(--success)':a.status==='stale'?'background:var(--warning);box-shadow:0 0 4px var(--warning)':'background:var(--danger);box-shadow:0 0 4px var(--danger)')+'"></span></td>' +
+      '<td title="'+esc(a.agent_id)+'">'+esc(a.hostname||a.agent_id)+'</td>' +
+      '<td>'+(esc(a.clawshield_version)||'-')+'</td>' +
+      '<td>'+(esc(a.policy_version)||'-')+'</td>' +
+      '<td>'+badge(a.status)+'</td>' +
+      '<td>'+tags(a.tags)+'</td>' +
+      '<td title="'+esc(a.last_checkin_at)+'">'+fmtAgo(a.last_checkin_at)+'</td>' +
+      '<td><button class="btn btn-sm" onclick="viewAgent(\''+esc(a.agent_id)+'\')">Detail</button></td>' +
+      '</tr>').join('');
+  }
+
+  document.getElementById('fleet-search').addEventListener('input', renderFleet);
+  document.getElementById('fleet-status-filter').addEventListener('change', loadFleet);
+  document.getElementById('fleet-tag-filter').addEventListener('change', loadFleet);
+
+  window.viewAgent = async function(id) {
+    try {
+      const data = await api('GET', '/agents/'+id);
+      const a = data.agent;
+      const checkins = data.recent_checkins || [];
+      alert('Agent: '+a.hostname+'\nID: '+a.agent_id+'\nVersion: '+a.clawshield_version+'\nPolicy: '+a.policy_version+'\nStatus: '+a.status+'\nLast Check-in: '+fmtTime(a.last_checkin_at)+'\nRecent Check-ins: '+checkins.length);
+    } catch(e) { alert('Error: '+e.message); }
+  };
+
+  // --- Policies ---
+  async function loadPolicies() {
+    try { groups = await api('GET', '/policy-groups') || []; } catch { groups = []; }
+    renderGroups();
+    populateGroupSelects();
+    if (selectedGroupId) loadVersions(selectedGroupId);
+    else if (groups.length > 0) { selectedGroupId = groups[0].group_id; loadVersions(selectedGroupId); }
+    document.getElementById('ft-policies').textContent = groups.length;
+  }
+
+  function renderGroups() {
+    const el = document.getElementById('policy-groups');
+    if (groups.length === 0) { el.innerHTML = '<div class="empty-state">No groups yet</div>'; return; }
+    el.innerHTML = groups.map(g => '<div class="stat-row" style="cursor:pointer;padding:8px 4px;border-radius:4px;'+(g.group_id===selectedGroupId?'background:rgba(0,217,255,.08);':'')+'" onclick="selectGroup(\''+esc(g.group_id)+'\')">' +
+      '<span style="font-weight:600">'+esc(g.name)+'</span>' +
+      '<span class="stat-value" style="font-size:11px">'+(esc(g.current_policy_version)||'none')+'</span></div>').join('');
+  }
+
+  window.selectGroup = function(id) { selectedGroupId = id; renderGroups(); loadVersions(id); };
+
+  async function loadVersions(groupId) {
+    try { versions = await api('GET', '/policy-versions/?group_id='+groupId) || []; } catch { versions = []; }
+    renderVersions();
+  }
+
+  function renderVersions() {
+    const el = document.getElementById('policy-versions');
+    if (versions.length === 0) { el.innerHTML = '<div class="empty-state">No versions for this group</div>'; return; }
+    el.innerHTML = '<table><thead><tr><th>Version</th><th>Status</th><th>Hash</th><th>Author</th><th>Created</th><th>Actions</th></tr></thead><tbody>' +
+      versions.map(v => '<tr>' +
+        '<td style="font-weight:600">'+esc(v.version_label)+'</td>' +
+        '<td>'+badge(v.status)+'</td>' +
+        '<td title="'+esc(v.policy_hash)+'">'+(v.policy_hash||'').substring(0,12)+'…</td>' +
+        '<td>'+esc(v.created_by)+'</td>' +
+        '<td>'+fmtTime(v.created_at)+'</td>' +
+        '<td>'+versionActions(v)+'</td>' +
+        '</tr>').join('') + '</tbody></table>';
+  }
+
+  function versionActions(v) {
+    let btns = '';
+    if (v.status === 'draft') btns += '<button class="btn btn-sm btn-primary" onclick="showApprove(\''+esc(v.version_id)+'\')">Review</button> ';
+    if (v.status === 'approved') btns += '<button class="btn btn-sm btn-primary" onclick="publishVersion(\''+esc(v.version_id)+'\')">Publish</button> ';
+    return btns || '-';
+  }
+
+  window.showApprove = function(id) { document.getElementById('appr-version-id').value = id; showModal('approve-modal'); };
+
+  window.approveVersion = async function(decision) {
+    const vid = document.getElementById('appr-version-id').value;
+    const who = document.getElementById('appr-who').value || 'admin';
+    const comment = document.getElementById('appr-comment').value || '';
+    try {
+      await api('POST', '/policy-versions/'+vid+'/approve', {approver_id:who, decision:decision, comment:comment});
+      hideModal('approve-modal');
+      loadVersions(selectedGroupId);
+    } catch(e) { alert('Error: '+e.message); }
+  };
+
+  window.publishVersion = async function(id) {
+    if (!confirm('Publish this policy version? It will be distributed to all agents in the group.')) return;
+    try { await api('POST', '/policy-versions/'+id+'/publish'); loadVersions(selectedGroupId); loadPolicies(); } catch(e) { alert('Error: '+e.message); }
+  };
+
+  window.createGroup = async function() {
+    const name = document.getElementById('grp-name').value;
+    const desc = document.getElementById('grp-desc').value;
+    if (!name) { alert('Name is required'); return; }
+    try { await api('POST', '/policy-groups', {name:name, description:desc}); hideModal('group-modal'); document.getElementById('grp-name').value=''; document.getElementById('grp-desc').value=''; loadPolicies(); } catch(e) { alert('Error: '+e.message); }
+  };
+
+  window.createVersion = async function() {
+    const groupId = document.getElementById('ver-group').value;
+    const label = document.getElementById('ver-label').value;
+    const author = document.getElementById('ver-author').value;
+    const yaml = document.getElementById('ver-yaml').value;
+    if (!groupId || !label || !yaml) { alert('Group, version, and YAML are required'); return; }
+    try { await api('POST', '/policy-versions', {group_id:groupId, version_label:label, policy_yaml:yaml, created_by:author||'admin'}); hideModal('version-modal'); selectedGroupId = groupId; loadVersions(groupId); } catch(e) { alert('Error: '+e.message); }
+  };
+
+  function populateGroupSelects() {
+    ['ver-group','key-group'].forEach(id => {
+      const sel = document.getElementById(id);
+      if (!sel) return;
+      sel.innerHTML = groups.map(g => '<option value="'+esc(g.group_id)+'">'+esc(g.name)+'</option>').join('');
+    });
+  }
+
+  // --- Keys ---
+  async function loadKeys() {
+    try { keys = await api('GET', '/keys') || []; } catch { keys = []; }
+    renderKeys();
+    document.getElementById('ft-keys').textContent = keys.filter(k=>k.status==='active').length;
+  }
+
+  function renderKeys() {
+    const body = document.getElementById('keys-body');
+    const empty = document.getElementById('keys-empty');
+    if (keys.length === 0) { body.innerHTML = ''; empty.style.display = 'block'; return; }
+    empty.style.display = 'none';
+    body.innerHTML = keys.map(k => '<tr>' +
+      '<td title="'+esc(k.key_id)+'">'+esc(k.key_id).substring(0,12)+'…</td>' +
+      '<td>'+esc(k.group_id).substring(0,8)+'…</td>' +
+      '<td>'+badge(k.status)+'</td>' +
+      '<td>'+fmtTime(k.created_at)+'</td>' +
+      '<td>'+fmtTime(k.expires_at)+'</td>' +
+      '<td>'+(k.status==='active'?'<button class="btn btn-sm btn-danger" onclick="revokeKey(\''+esc(k.key_id)+'\')">Revoke</button>':'-')+'</td>' +
+      '</tr>').join('');
+  }
+
+  window.createKey = async function() {
+    const groupId = document.getElementById('key-group').value;
+    if (!groupId) { alert('Select a group'); return; }
+    const keyBytes = new Uint8Array(32);
+    crypto.getRandomValues(keyBytes);
+    const hexKey = Array.from(keyBytes).map(b=>b.toString(16).padStart(2,'0')).join('');
+    try {
+      const result = await api('POST', '/keys', {group_id:groupId, encrypted_key:hexKey});
+      hideModal('key-modal');
+      alert('Key created: '+result.key_id+'\n\nKey material (save securely, shown once):\n'+hexKey);
+      loadKeys();
+    } catch(e) { alert('Error: '+e.message); }
+  };
+
+  window.revokeKey = async function(id) {
+    if (!confirm('Revoke this key? Agents using it will lose access to encrypted audit data.')) return;
+    try { await api('POST', '/keys/'+id+'/revoke'); loadKeys(); } catch(e) { alert('Error: '+e.message); }
+  };
+
+  // --- Updates ---
+  async function loadUpdates() {
+    try { releases = await api('GET', '/releases') || []; } catch { releases = []; }
+    renderReleases();
+    renderRollouts();
+  }
+
+  function renderReleases() {
+    const el = document.getElementById('releases-list');
+    if (releases.length === 0) { el.innerHTML = '<div class="empty-state">No releases</div>'; return; }
+    el.innerHTML = releases.map(r => '<div class="stat-row" style="padding:8px 0;border-bottom:1px solid rgba(30,41,59,.3)">' +
+      '<div><span style="font-weight:700;color:var(--primary)">v'+esc(r.version)+'</span><br><span style="font-size:11px;color:var(--muted)">'+fmtTime(r.created_at)+'</span></div>' +
+      '<button class="btn btn-sm" onclick="startRollout(\''+esc(r.release_id)+'\')">Rollout</button>' +
+      '</div>').join('');
+  }
+
+  function renderRollouts() {
+    const el = document.getElementById('rollouts-list');
+    el.innerHTML = '<div class="empty-state">Select a release to start a rollout</div>';
+  }
+
+  window.createRelease = async function() {
+    const version = document.getElementById('rel-version').value;
+    const hash = document.getElementById('rel-hash').value;
+    const notes = document.getElementById('rel-notes').value;
+    if (!version || !hash) { alert('Version and hash are required'); return; }
+    try { await api('POST', '/releases', {version:version, binary_hash:hash, signature:'', release_notes:notes}); hideModal('release-modal'); document.getElementById('rel-version').value=''; document.getElementById('rel-hash').value=''; document.getElementById('rel-notes').value=''; loadUpdates(); } catch(e) { alert('Error: '+e.message); }
+  };
+
+  window.startRollout = async function(releaseId) {
+    if (!confirm('Start canary rollout for this release?')) return;
+    try {
+      const result = await api('POST', '/rollouts', {release_id:releaseId, wave_config:{canary_percent:5, wave1_percent:25, wave2_percent:50}});
+      alert('Rollout started: '+result.rollout_id);
+      loadUpdates();
+    } catch(e) { alert('Error: '+e.message); }
+  };
+
+  // --- Tokens ---
+  async function loadTokens() {
+    try { tokens = await api('GET', '/tokens') || []; } catch { tokens = []; }
+    renderTokens();
+  }
+
+  function renderTokens() {
+    document.getElementById('token-count').textContent = tokens.length;
+    const body = document.getElementById('tokens-body');
+    const empty = document.getElementById('tokens-empty');
+    if (tokens.length === 0) { body.innerHTML = ''; empty.style.display = 'block'; return; }
+    empty.style.display = 'none';
+    body.innerHTML = tokens.map(t => '<tr>' +
+      '<td title="'+esc(t.token)+'"><code>'+esc(t.token)+'</code></td>' +
+      '<td>'+(t.used ? '<span class="badge badge-rotated">Used</span>' : '<span class="badge badge-active">Available</span>')+'</td>' +
+      '<td>'+fmtTime(t.created_at)+'</td>' +
+      '<td>'+(esc(t.used_by)||'-')+'</td>' +
+      '<td>'+(t.used_at ? fmtTime(t.used_at) : '-')+'</td>' +
+      '</tr>').join('');
+  }
+
+  window.createToken = async function() {
+    try {
+      const result = await api('POST', '/tokens');
+      loadTokens();
+      alert('Token created:\n\n'+result.token+'\n\nUse this to enroll a new agent. It can only be used once.');
+    } catch(e) { alert('Error: '+e.message); }
+  };
+
+  // --- Init ---
+  checkHub();
+  setInterval(checkHub, 10000);
+  loadDashboard();
+  setInterval(() => {
+    const active = document.querySelector('.tab.active');
+    if (active) refresh(active.dataset.tab);
+  }, 15000);
+})();
+</script>
+</body>
+</html>

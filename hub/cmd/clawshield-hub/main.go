@@ -1,10 +1,12 @@
 // Command clawshield-hub runs the ClawShield enterprise fleet management hub.
 // It provides a REST API for agent enrollment, check-in, policy management,
-// key distribution, and fleet monitoring.
+// key distribution, and fleet monitoring, plus a web-based admin dashboard.
 package main
 
 import (
+	"embed"
 	"flag"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +16,9 @@ import (
 	"github.com/SleuthCo/clawshield/hub/internal/api"
 	"github.com/SleuthCo/clawshield/hub/internal/store"
 )
+
+//go:embed static
+var staticFiles embed.FS
 
 func main() {
 	listenAddr := flag.String("listen", ":18800", "address to listen on")
@@ -47,6 +52,26 @@ func main() {
 	hub.RegisterUpdateRoutes(mux)
 	hub.RegisterDashboardRoutes(mux)
 
+	// Serve embedded static files and dashboard
+	staticFS, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		log.Fatalf("failed to create static filesystem: %v", err)
+	}
+	// Serve root dashboard and static assets via a single catch-all handler
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			data, err := fs.ReadFile(staticFS, "index.html")
+			if err != nil {
+				http.Error(w, "dashboard not found", 500)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
 	server := &http.Server{
 		Addr:    *listenAddr,
 		Handler: mux,
@@ -62,6 +87,7 @@ func main() {
 	}()
 
 	log.Printf("ClawShield Management Hub listening on %s", *listenAddr)
+	log.Printf("Admin dashboard: http://localhost%s", *listenAddr)
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}

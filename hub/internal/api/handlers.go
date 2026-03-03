@@ -27,6 +27,33 @@ func (h *Hub) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/agents", h.HandleListAgents)
 	mux.HandleFunc("GET /api/v1/agents/", h.HandleGetAgent)
 	mux.HandleFunc("GET /api/v1/health", h.HandleHealth)
+	mux.HandleFunc("GET /api/v1/tokens", h.HandleListTokens)
+	mux.HandleFunc("POST /api/v1/tokens", h.HandleCreateToken)
+}
+
+// HandleListTokens handles GET /api/v1/tokens
+func (h *Hub) HandleListTokens(w http.ResponseWriter, r *http.Request) {
+	tokens, err := h.Store.ListEnrollmentTokens()
+	if err != nil {
+		log.Printf("error listing tokens: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if tokens == nil {
+		tokens = []store.EnrollmentToken{}
+	}
+	writeJSON(w, http.StatusOK, tokens)
+}
+
+// HandleCreateToken handles POST /api/v1/tokens
+func (h *Hub) HandleCreateToken(w http.ResponseWriter, r *http.Request) {
+	token := uuid.New().String()
+	if err := h.Store.CreateEnrollmentToken(token); err != nil {
+		log.Printf("error creating token: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"token": token})
 }
 
 // HandleEnroll handles agent enrollment requests.
