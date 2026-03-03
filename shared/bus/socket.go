@@ -51,9 +51,11 @@ func (sl *SocketListener) Start() error {
 	}
 	sl.listener = ln
 
-	// Make socket world-writable so eBPF (running as root) and proxy can both access it
-	if err := os.Chmod(sl.socketPath, 0666); err != nil {
-		log.Printf("WARNING: failed to chmod event socket: %v", err)
+	// Set socket permissions to 0660 (owner + group readable/writable only).
+	// eBPF monitor, proxy, and firewall should share a security group (e.g., "clawshield").
+	// This prevents unprivileged processes from reading/writing security events.
+	if err := os.Chmod(sl.socketPath, 0660); err != nil {
+		log.Printf("CRITICAL: failed to chmod event socket to 0660: %v", err)
 	}
 
 	sl.wg.Add(1)

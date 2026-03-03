@@ -12,6 +12,7 @@ package bus
 import (
 	"log"
 	"sync"
+	"sync/atomic"
 
 	"github.com/SleuthCo/clawshield/shared/types"
 )
@@ -47,7 +48,8 @@ type EventBus struct {
 	subscribers []subscriber
 	nextID      int
 	closed      bool
-	dropped     int64 // Counter for dropped events (subscriber channel full)
+	published   atomic.Int64
+	dropped     atomic.Int64 // Counter for dropped events (subscriber channel full)
 }
 
 // New creates a new EventBus ready for use.
@@ -90,8 +92,8 @@ func (b *EventBus) Unsubscribe(id int) {
 }
 
 // Publish sends an event to all matching subscribers.
-// This is non-blocking: if a subscriber's channel is full, the event is dropped
-// for that subscriber and a warning is logged.
+// Non-blocking: if a subscriber's channel is full, the event is dropped and
+// the loss is counted. Check DroppedEvents() to monitor event pipeline health.
 func (b *EventBus) Publish(event *types.SecurityEvent) {
 	if event == nil {
 		return
@@ -111,23 +113,31 @@ func (b *EventBus) Publish(event *types.SecurityEvent) {
 
 		select {
 		case sub.ch <- event:
-			// Delivered successfully
+			b.published.Add(1)
 		default:
 			// Channel full — drop event to avoid blocking the producer
-			b.dropped++
-			if b.dropped%100 == 1 {
-				log.Printf("WARNING: event bus subscriber %d channel full, dropped event (type=%s source=%s). Total dropped: %d",
-					sub.id, event.EventType, event.Source, b.dropped)
+			dropped := b.dropped.Add(1)
+			if dropped == 1 || dropped%100 == 0 {
+				log.Printf("WARNING: event bus dropped %d events (subscriber backpressure)", dropped)
 			}
 		}
 	}
 }
 
+// DroppedEvents returns the total number of events dropped due to slow subscribers.
+func (b *EventBus) DroppedEvents() int64 {
+	return b.dropped.Load()
+}
+
+// PublishedEvents returns the total number of events successfully published.
+func (b *EventBus) PublishedEvents() int64 {
+	return b.published.Load()
+}
+
 // Dropped returns the total number of events dropped due to slow subscribers.
+// Deprecated: use DroppedEvents instead.
 func (b *EventBus) Dropped() int64 {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.dropped
+	return b.dropped.Load()
 }
 
 // Close shuts down the event bus and closes all subscriber channels.
