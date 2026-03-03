@@ -370,3 +370,30 @@ On Windows, if pnpm's `script-shell` is set to `/bin/bash` (WSL), builds fail wi
 ```bash
 pnpm config set script-shell "C:\Program Files\Git\bin\bash.exe"
 ```
+
+## eBPF Monitor (Layer 3)
+
+The eBPF monitor is now a Go binary (replacing the previous Python/BCC implementation).
+
+### Requirements
+
+**Full eBPF mode:**
+- Linux kernel 5.0+
+- BTF support (`/sys/kernel/btf/vmlinux` must exist)
+- Root or `CAP_BPF` capability
+
+**Fallback procfs mode:**
+- Any Linux system with `/proc` filesystem
+- No special capabilities required
+
+### Running
+
+```bash
+# Build
+go build -o clawshield-ebpf ./ebpf/cmd/clawshield-ebpf/
+
+# Run (auto-detects best backend)
+./clawshield-ebpf
+```
+
+The monitor automatically detects system capabilities and falls back to procfs polling if eBPF is unavailable.

