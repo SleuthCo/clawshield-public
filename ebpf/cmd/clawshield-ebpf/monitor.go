@@ -256,7 +256,7 @@ func (m *ProcfsMonitor) checkProcess(pid int) {
 				Timestamp: time.Now(),
 				Details: map[string]string{
 					"pid":     strconv.Itoa(pid),
-					"cmdline": truncate(cmdline, 200),
+					"cmdline": truncate(sanitizeForLogging(cmdline), 200),
 					"pattern": pattern.String(),
 				},
 			})
@@ -368,6 +368,21 @@ func truncate(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
+// sanitizeForLogging removes control characters from strings before logging
+// to prevent log injection attacks. Attackers can craft /proc/[pid]/cmdline
+// with embedded newlines, ANSI escape codes, or null bytes that could:
+// - Break log parsers (SIEM ingestion)
+// - Inject fake log entries
+// - Corrupt terminal output when viewing logs
+func sanitizeForLogging(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return '_'
+		}
+		return r
+	}, s)
+}
+
 
 // CheckEBPFAvailable checks whether the system supports eBPF.
 // Returns true if:
