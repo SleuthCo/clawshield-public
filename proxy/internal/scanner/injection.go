@@ -471,7 +471,7 @@ func checkBase64Instructions(text string) (bool, string) {
 }
 
 // isHighImperativeDensity checks if text has suspiciously high density of imperative verbs.
-// Returns true if more than 30% of sentences start with imperative verbs.
+// Returns true if more than 40% of sentences start with imperative verbs.
 func isHighImperativeDensity(text string) bool {
 	if len(text) < 100 {
 		return false
