@@ -149,6 +149,21 @@ The core of ClawShield. An HTTP reverse proxy that intercepts all traffic betwee
 - **Vulnerability scanning** — flags SQL injection, SSRF, path traversal, command injection, XSS
 - **Malware analysis** — detects executables, scripts, archive bombs, known signatures
 
+**Production Hardening (Layer 3):**
+- Go-native eBPF monitor replacing Python/BCC dependency — single compiled binary
+- Graceful degradation: automatic fallback to `/proc` polling when eBPF is unavailable (no `CAP_BPF`, old kernel, containers)
+- Health check system: per-layer status reporting (healthy/degraded/down) for all 3 defense layers
+- Event pipeline reliability: loss counting, backpressure logging, published/dropped event metrics
+- Dynamic DNS re-resolution for firewall rules — prevents stale rules when CDN IPs rotate
+- Capability detection at startup: kernel version, BTF support, root/CAP_BPF check
+
+**Policy Hot-Reload:**
+- File-watch based hot-reload — modify `policy.yaml` and changes take effect within 5 seconds, no restart needed
+- Content-hash versioning — every policy version gets a SHA256-based version ID, recorded in audit logs
+- Shadow/canary mode — test new policies in log-only mode before enforcing
+- Policy diff — every reload logs exactly what changed (allowlist additions, scanner toggles, etc.)
+- Atomic swap — in-flight requests continue with old policy, new requests use new policy
+
 **Streaming Response Scanning:**
 - Real-time chunk-by-chunk scanning of SSE and NDJSON streams — no buffering delay
 - Sliding overlap window (200 chars) catches patterns spanning chunk boundaries

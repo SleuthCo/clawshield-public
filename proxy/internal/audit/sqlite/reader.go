@@ -9,22 +9,65 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SleuthCo/clawshield/proxy/internal/audit/crypto"
 	"github.com/SleuthCo/clawshield/shared/types"
 )
 
+// Reader provides a query interface for ClawShield audit logs.
 type Reader struct {
-	db *sql.DB
+	db        *sql.DB
+	encryptor *crypto.FieldEncryptor
 }
 
+// NewReader creates a new audit log reader without decryption.
 func NewReader(db *sql.DB) *Reader {
 	return &Reader{db: db}
+}
+
+// NewReaderWithEncryptor creates a new audit log reader with decryption support.
+// When set, encrypted fields are transparently decrypted on read.
+// Unencrypted (legacy) data is returned as-is for migration compatibility.
+func NewReaderWithEncryptor(db *sql.DB, enc *crypto.FieldEncryptor) *Reader {
+	return &Reader{db: db, encryptor: enc}
+}
+
+// decryptField attempts to decrypt a byte slice if it appears encrypted.
+// Returns the original data unchanged if no encryptor is set or if the
+// data does not have the encryption version prefix (plaintext/legacy data).
+// This enables graceful migration from unencrypted to encrypted storage.
+func (r *Reader) decryptField(data []byte) ([]byte, error) {
+	if r.encryptor == nil || len(data) == 0 {
+		return data, nil
+	}
+	if !crypto.IsEncrypted(data) {
+		return data, nil
+	}
+	return r.encryptor.Decrypt(data)
+}
+
+// decryptStringField attempts to decrypt a string field stored as raw bytes.
+// Returns the original string if no encryptor is set or if the data is plaintext.
+func (r *Reader) decryptStringField(s string) (string, error) {
+	if r.encryptor == nil || s == "" {
+		return s, nil
+	}
+	data := []byte(s)
+	if !crypto.IsEncrypted(data) {
+		return s, nil
+	}
+	decrypted, err := r.encryptor.Decrypt(data)
+	if err != nil {
+		return "", err
+	}
+	return string(decrypted), nil
 }
 
 // QueryDecisions queries decisions based on filters.
 // Returns a slice of DecisionLog objects with optional tool_calls.
 func (r *Reader) QueryDecisions(ctx context.Context, opts ...QueryOption) ([]*types.DecisionLog, error) {
 	q := &query{
-		db: r.db,
+		db:     r.db,
+		reader: r,
 	}
 
 	for _, opt := range opts {
@@ -88,6 +131,7 @@ func WithRuleID(ruleID string) QueryOption {
 
 type query struct {
 	db              *sql.DB
+	reader          *Reader
 	from            time.Time
 	to              time.Time
 	decision        string
@@ -165,7 +209,7 @@ func (q *query) execute(ctx context.Context) ([]*types.DecisionLog, error) {
 		if q.includeToolCall {
 			var call types.ToolCall
 			var reqJSON, respJSON sql.NullString
-			var detailsJSON sql.NullString
+			var detailsRaw sql.NullString
 			err := rows.Scan(
 				&decision.DecisionID,
 				&decision.Timestamp,
@@ -175,34 +219,66 @@ func (q *query) execute(ctx context.Context) ([]*types.DecisionLog, error) {
 				&decision.Decision,
 				&decision.Reason,
 				&decision.PolicyVersion,
-				&detailsJSON,
+				&detailsRaw,
 				&reqJSON,
 				&respJSON,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("scan decision with tool call: %w", err)
 			}
-			if detailsJSON.Valid {
-				details, err := types.UnmarshalDecisionDetail([]byte(detailsJSON.String))
+
+			// SECURITY: Decrypt arguments_hash if encrypted
+			if decision.ArgumentsHash != "" {
+				decryptedHash, err := q.reader.decryptStringField(decision.ArgumentsHash)
 				if err != nil {
-					// SECURITY: Gracefully handle corrupt JSON rather than failing
-					// the entire query — a single corrupt row shouldn't block forensics.
-					log.Printf("WARNING: corrupt decision_details JSON for decision_id=%d: %v", decision.DecisionID, err)
+					log.Printf("WARNING: failed to decrypt arguments_hash for decision_id=%d: %v", decision.DecisionID, err)
 				} else {
-					decision.Details = details
+					decision.ArgumentsHash = decryptedHash
 				}
 			}
+
+			// SECURITY: Decrypt and unmarshal decision_details
+			if detailsRaw.Valid {
+				detailsBytes := []byte(detailsRaw.String)
+				detailsBytes, err := q.reader.decryptField(detailsBytes)
+				if err != nil {
+					log.Printf("WARNING: failed to decrypt decision_details for decision_id=%d: %v", decision.DecisionID, err)
+				} else {
+					details, err := types.UnmarshalDecisionDetail(detailsBytes)
+					if err != nil {
+						// SECURITY: Gracefully handle corrupt JSON rather than failing
+						// the entire query — a single corrupt row shouldn't block forensics.
+						log.Printf("WARNING: corrupt decision_details JSON for decision_id=%d: %v", decision.DecisionID, err)
+					} else {
+						decision.Details = details
+					}
+				}
+			}
+
+			// SECURITY: Decrypt tool call request/response JSON
 			if reqJSON.Valid {
-				call.RequestJSON = []byte(reqJSON.String)
+				reqBytes, err := q.reader.decryptField([]byte(reqJSON.String))
+				if err != nil {
+					log.Printf("WARNING: failed to decrypt request_json for decision_id=%d: %v", decision.DecisionID, err)
+					call.RequestJSON = []byte(reqJSON.String)
+				} else {
+					call.RequestJSON = reqBytes
+				}
 			}
 			if respJSON.Valid {
-				call.ResponseJSON = []byte(respJSON.String)
+				respBytes, err := q.reader.decryptField([]byte(respJSON.String))
+				if err != nil {
+					log.Printf("WARNING: failed to decrypt response_json for decision_id=%d: %v", decision.DecisionID, err)
+					call.ResponseJSON = []byte(respJSON.String)
+				} else {
+					call.ResponseJSON = respBytes
+				}
 			}
 			call.DecisionID = decision.DecisionID
 			call.CreatedAt = decision.Timestamp
 			toolCallPtr = &call
 		} else {
-			var detailsJSON sql.NullString
+			var detailsRaw sql.NullString
 			err := rows.Scan(
 				&decision.DecisionID,
 				&decision.Timestamp,
@@ -212,17 +288,35 @@ func (q *query) execute(ctx context.Context) ([]*types.DecisionLog, error) {
 				&decision.Decision,
 				&decision.Reason,
 				&decision.PolicyVersion,
-				&detailsJSON,
+				&detailsRaw,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("scan decision: %w", err)
 			}
-			if detailsJSON.Valid {
-				details, err := types.UnmarshalDecisionDetail([]byte(detailsJSON.String))
+
+			// SECURITY: Decrypt arguments_hash if encrypted
+			if decision.ArgumentsHash != "" {
+				decryptedHash, err := q.reader.decryptStringField(decision.ArgumentsHash)
 				if err != nil {
-					log.Printf("WARNING: corrupt decision_details JSON for decision_id=%d: %v", decision.DecisionID, err)
+					log.Printf("WARNING: failed to decrypt arguments_hash for decision_id=%d: %v", decision.DecisionID, err)
 				} else {
-					decision.Details = details
+					decision.ArgumentsHash = decryptedHash
+				}
+			}
+
+			// SECURITY: Decrypt and unmarshal decision_details
+			if detailsRaw.Valid {
+				detailsBytes := []byte(detailsRaw.String)
+				detailsBytes, err := q.reader.decryptField(detailsBytes)
+				if err != nil {
+					log.Printf("WARNING: failed to decrypt decision_details for decision_id=%d: %v", decision.DecisionID, err)
+				} else {
+					details, err := types.UnmarshalDecisionDetail(detailsBytes)
+					if err != nil {
+						log.Printf("WARNING: corrupt decision_details JSON for decision_id=%d: %v", decision.DecisionID, err)
+					} else {
+						decision.Details = details
+					}
 				}
 			}
 		}
