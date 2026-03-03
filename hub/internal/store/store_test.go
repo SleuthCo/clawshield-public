@@ -296,3 +296,287 @@ func TestMarkStaleAgents(t *testing.T) {
 		t.Fatalf("expected 0 newly stale, got %d", n)
 	}
 }
+
+func TestListEnrollmentTokens(t *testing.T) {
+	s := newTestStore(t)
+
+	// Create several tokens
+	token1 := "token-001"
+	token2 := "token-002"
+	token3 := "token-003"
+	if err := s.CreateEnrollmentToken(token1); err != nil {
+		t.Fatalf("create token1: %v", err)
+	}
+	if err := s.CreateEnrollmentToken(token2); err != nil {
+		t.Fatalf("create token2: %v", err)
+	}
+	if err := s.CreateEnrollmentToken(token3); err != nil {
+		t.Fatalf("create token3: %v", err)
+	}
+
+	// Use one token
+	if _, err := s.ValidateEnrollmentToken(token2); err != nil {
+		t.Fatalf("validate token2: %v", err)
+	}
+
+	// List all tokens
+	tokens, err := s.ListEnrollmentTokens()
+	if err != nil {
+		t.Fatalf("list tokens: %v", err)
+	}
+
+	if len(tokens) != 3 {
+		t.Fatalf("expected 3 tokens, got %d", len(tokens))
+	}
+
+	// Verify tokens are ordered by created_at DESC
+	foundToken1, foundToken2, foundToken3 := false, false, false
+	for _, tok := range tokens {
+		switch tok.Token {
+		case token1:
+			if tok.Used {
+				t.Error("token1 should not be used")
+			}
+			foundToken1 = true
+		case token2:
+			if !tok.Used {
+				t.Error("token2 should be used")
+			}
+			foundToken2 = true
+		case token3:
+			if tok.Used {
+				t.Error("token3 should not be used")
+			}
+			foundToken3 = true
+		}
+	}
+
+	if !foundToken1 || !foundToken2 || !foundToken3 {
+		t.Fatal("not all tokens found in list")
+	}
+}
+
+func TestSetPolicyVersionSignature(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.InitPolicySchema(); err != nil {
+		t.Fatalf("init policy schema: %v", err)
+	}
+
+	// Create policy group
+	group := models.PolicyGroup{
+		GroupID:     "group-sig-test",
+		Name:        "Signature Test Group",
+		Description: "Testing signature functionality",
+	}
+	if err := s.CreatePolicyGroup(group); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	// Create policy version
+	version := models.PolicyVersion{
+		VersionID:  "v1-sig-test",
+		GroupID:    "group-sig-test",
+		VersionLabel: "1.0.0",
+		PolicyYAML: "default_action: deny\nallowlist:\n  - web_search\n",
+		PolicyHash: "sha256:test123",
+		Status:     "draft",
+		CreatedBy:  "test-user",
+	}
+	if err := s.CreatePolicyVersion(version); err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	// Set signature
+	testSig := "signature-test-value-abc123def456"
+	if err := s.SetPolicyVersionSignature("v1-sig-test", testSig); err != nil {
+		t.Fatalf("set signature: %v", err)
+	}
+
+	// Verify signature was set
+	retrieved, err := s.GetPolicyVersion("v1-sig-test")
+	if err != nil {
+		t.Fatalf("get version: %v", err)
+	}
+	if retrieved.Signature != testSig {
+		t.Errorf("signature: got %q, want %q", retrieved.Signature, testSig)
+	}
+}
+
+func TestRecordCheckin_NilMetrics(t *testing.T) {
+	s := newTestStore(t)
+	s.RegisterAgent("agent-nil-metrics", "host1", nil)
+
+	// Record checkin with nil metrics map (should be handled gracefully)
+	req := &models.CheckinRequest{
+		AgentID:           "agent-nil-metrics",
+		Hostname:          "host1",
+		ClawshieldVersion: "1.0.0",
+		AgentVersion:      "1.0.0",
+		Health:            models.AgentHealth{Status: "healthy"},
+		MetricsSummary:    models.MetricsSummary{}, // Empty metrics
+	}
+
+	if err := s.RecordCheckin(req); err != nil {
+		t.Fatalf("record checkin with empty metrics: %v", err)
+	}
+
+	// Verify checkin was recorded
+	checkins, err := s.GetRecentCheckins("agent-nil-metrics", 10)
+	if err != nil {
+		t.Fatalf("get checkins: %v", err)
+	}
+	if len(checkins) != 1 {
+		t.Fatalf("expected 1 checkin, got %d", len(checkins))
+	}
+}
+
+func TestRecordCheckin_MultipleCheckins(t *testing.T) {
+	s := newTestStore(t)
+	s.RegisterAgent("agent-multiple", "host1", nil)
+
+	// Record multiple checkins for the same agent
+	for i := 0; i < 5; i++ {
+		req := &models.CheckinRequest{
+			AgentID:           "agent-multiple",
+			Hostname:          "host1",
+			ClawshieldVersion: "1.0.0",
+			Health: models.AgentHealth{
+				Status:           "healthy",
+				AuditDBSizeBytes: int64(1000 * (i + 1)),
+			},
+			MetricsSummary: models.MetricsSummary{
+				DecisionsTotal:  100 + i*10,
+				DecisionsDenied: 5 + i,
+			},
+		}
+		if err := s.RecordCheckin(req); err != nil {
+			t.Fatalf("checkin %d: %v", i, err)
+		}
+	}
+
+	// Verify all checkins are recorded
+	checkins, err := s.GetRecentCheckins("agent-multiple", 10)
+	if err != nil {
+		t.Fatalf("get checkins: %v", err)
+	}
+	if len(checkins) != 5 {
+		t.Fatalf("expected 5 checkins, got %d", len(checkins))
+	}
+
+	// Verify they're in descending order by checkin_id (most recent first)
+	for i := 1; i < len(checkins); i++ {
+		if checkins[i].CheckinID > checkins[i-1].CheckinID {
+			t.Error("checkins not in descending order")
+		}
+	}
+}
+
+func TestGetRecentCheckins_LimitZero(t *testing.T) {
+	s := newTestStore(t)
+	s.RegisterAgent("agent-limit-zero", "host1", nil)
+
+	// Record a checkin
+	req := &models.CheckinRequest{
+		AgentID: "agent-limit-zero",
+		Health:  models.AgentHealth{Status: "healthy"},
+	}
+	if err := s.RecordCheckin(req); err != nil {
+		t.Fatalf("record checkin: %v", err)
+	}
+
+	// Get with limit of 0
+	checkins, err := s.GetRecentCheckins("agent-limit-zero", 0)
+	if err != nil {
+		t.Fatalf("get checkins with limit 0: %v", err)
+	}
+	if len(checkins) != 0 {
+		t.Fatalf("expected 0 checkins with limit 0, got %d", len(checkins))
+	}
+}
+
+func TestGetRecentCheckins_NoCheckins(t *testing.T) {
+	s := newTestStore(t)
+	s.RegisterAgent("agent-no-checkins", "host1", nil)
+
+	// Get checkins for agent with no checkins
+	checkins, err := s.GetRecentCheckins("agent-no-checkins", 10)
+	if err != nil {
+		t.Fatalf("get checkins: %v", err)
+	}
+	if len(checkins) != 0 {
+		t.Fatalf("expected 0 checkins, got %d", len(checkins))
+	}
+}
+
+func TestPublishPolicyVersion_Unapproved(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.InitPolicySchema(); err != nil {
+		t.Fatalf("init policy schema: %v", err)
+	}
+
+	// Create policy group and version
+	group := models.PolicyGroup{
+		GroupID: "group-unapproved",
+		Name:    "Unapproved Test",
+	}
+	if err := s.CreatePolicyGroup(group); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	version := models.PolicyVersion{
+		VersionID:     "v-unapproved",
+		GroupID:       "group-unapproved",
+		VersionLabel:  "1.0.0",
+		PolicyYAML:    "default_action: deny\n",
+		PolicyHash:    "sha256:test",
+		Status:        "draft", // Still in draft
+		CreatedBy:     "test-user",
+	}
+	if err := s.CreatePolicyVersion(version); err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	// Try to publish draft version — should fail
+	err := s.PublishPolicyVersion("v-unapproved")
+	if err == nil {
+		t.Fatal("expected error when publishing unapproved version")
+	}
+}
+
+func TestPublishPolicyVersion_Nonexistent(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.InitPolicySchema(); err != nil {
+		t.Fatalf("init policy schema: %v", err)
+	}
+
+	// Try to publish non-existent version
+	err := s.PublishPolicyVersion("nonexistent-version")
+	if err == nil {
+		t.Fatal("expected error when publishing nonexistent version")
+	}
+}
+
+func TestRegisterAgent_EmptyTags(t *testing.T) {
+	s := newTestStore(t)
+
+	// Register agent with empty tags slice
+	err := s.RegisterAgent("agent-empty-tags", "host1.example.com", []string{})
+	if err != nil {
+		t.Fatalf("register with empty tags: %v", err)
+	}
+
+	// Retrieve and verify
+	agent, err := s.GetAgent("agent-empty-tags")
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if agent == nil {
+		t.Fatal("expected non-nil agent")
+	}
+	if agent.AgentID != "agent-empty-tags" {
+		t.Errorf("agent_id: got %q, want %q", agent.AgentID, "agent-empty-tags")
+	}
+	if len(agent.Tags) != 0 {
+		t.Errorf("expected empty tags, got %v", agent.Tags)
+	}
+}

