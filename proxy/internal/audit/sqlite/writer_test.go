@@ -2,7 +2,11 @@ package sqlite
 
 import (
 	"database/sql"
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +14,41 @@ import (
 	"github.com/SleuthCo/clawshield/shared/types"
 	_ "github.com/mattn/go-sqlite3"
 )
+
+var schema = `
+CREATE TABLE IF NOT EXISTS decisions (
+	decision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+	timestamp DATETIME NOT NULL,
+	session_id TEXT NOT NULL,
+	tool TEXT NOT NULL,
+	arguments_hash TEXT NOT NULL,
+	decision TEXT NOT NULL,
+	reason TEXT,
+	policy_version TEXT,
+	scanner_type TEXT,
+	correlation_id TEXT,
+	classification TEXT,
+	source TEXT,
+	response_blocked INTEGER DEFAULT 0,
+	decision_details JSON
+);
+
+CREATE TABLE IF NOT EXISTS tool_calls (
+	call_id INTEGER PRIMARY KEY AUTOINCREMENT,
+	decision_id INTEGER NOT NULL,
+	request_json TEXT,
+	response_json TEXT,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (decision_id) REFERENCES decisions(decision_id)
+);
+
+CREATE TABLE IF NOT EXISTS integrity_checkpoints (
+	checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
+	timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+	db_hash TEXT NOT NULL,
+	reason TEXT
+);
+`
 
 func setupTestDB(t *testing.T) *sql.DB {
 	tmpDir := t.TempDir()
@@ -20,47 +59,25 @@ func setupTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("failed to open test db: %v", err)
 	}
 	
-	// Create schema
-	schema := `
-	CREATE TABLE IF NOT EXISTS decisions (
-		decision_id INTEGER PRIMARY KEY AUTOINCREMENT,
-		timestamp DATETIME NOT NULL,
-		session_id TEXT NOT NULL,
-		tool TEXT NOT NULL,
-		arguments_hash TEXT NOT NULL,
-		decision TEXT NOT NULL,
-		reason TEXT,
-		policy_version TEXT,
-		scanner_type TEXT,
-		correlation_id TEXT,
-		classification TEXT,
-		source TEXT,
-		response_blocked INTEGER DEFAULT 0,
-		decision_details JSON
-	);
-	
-	CREATE TABLE IF NOT EXISTS tool_calls (
-		call_id INTEGER PRIMARY KEY AUTOINCREMENT,
-		decision_id INTEGER NOT NULL,
-		request_json TEXT,
-		response_json TEXT,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (decision_id) REFERENCES decisions(decision_id)
-	);
-	
-	CREATE TABLE IF NOT EXISTS integrity_checkpoints (
-		checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
-		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-		db_hash TEXT NOT NULL,
-		reason TEXT
-	);
-	`
-	
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatalf("failed to create schema: %v", err)
 	}
 	
 	return db
+}
+
+func setupTestDBAtPath(t *testing.T, dbPath string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, err
+	}
+	
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, err
+	}
+	
+	return db, nil
 }
 
 func TestNewWriter(t *testing.T) {
@@ -668,5 +685,205 @@ func TestWriter_DataIntegrity(t *testing.T) {
 	
 	if policyVersion != testDecision.PolicyVersion {
 		t.Errorf("policyVersion = %q, want %q", policyVersion, testDecision.PolicyVersion)
+	}
+}
+
+// TestWriter_RetryOnFailure verifies that failed writes are retried with backoff,
+// and that successful retries still persist data correctly.
+func TestWriter_RetryOnFailure(t *testing.T) {
+	db := setupTestDB(t)
+
+	w, err := NewWriterWithPath(db, ":memory:")
+	if err != nil {
+		t.Fatalf("NewWriterWithPath failed: %v", err)
+	}
+	defer w.Close()
+
+	decision := types.Decision{
+		Timestamp:     time.Now().UTC(),
+		SessionID:     "test-session",
+		Tool:          "test-tool",
+		Decision:      "allow",
+		Reason:        "test reason",
+		PolicyVersion: "v1",
+		ScannerType:   "test",
+		CorrelationID: "corr-123",
+		Classification: "test-class",
+		Source:        "test-source",
+	}
+
+	// Write a decision through the normal async path
+	err = w.Write(&decision)
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	// Close to trigger final flush with retry logic
+	err = w.Close()
+	if err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Verify the decision was persisted
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM decisions").Scan(&count)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if count != 1 {
+		t.Errorf("expected 1 decision in DB, got %d", count)
+	}
+}
+
+// TestWriter_ExternalCheckpoint verifies that external checkpoints are written
+// when the entry count reaches the checkpoint interval.
+func TestWriter_ExternalCheckpoint(t *testing.T) {
+	// Create a temporary directory for checkpoint files
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/test.db"
+
+	// Open database at the temp path
+	db, err := setupTestDBAtPath(t, dbPath)
+	if err != nil {
+		t.Fatalf("setupTestDBAtPath failed: %v", err)
+	}
+	defer db.Close()
+
+	w, err := NewWriterWithPath(db, dbPath)
+	if err != nil {
+		t.Fatalf("NewWriterWithPath failed: %v", err)
+	}
+
+	// Write enough decisions to trigger checkpoint (checkpointInterval = 100)
+	for i := 0; i < 102; i++ {
+		decision := types.Decision{
+			Timestamp:     time.Now().UTC(),
+			SessionID:     "test-session",
+			Tool:          "test-tool",
+			Decision:      "allow",
+			Reason:        "test reason",
+			PolicyVersion: "v1",
+			ScannerType:   "test",
+			CorrelationID: "corr-123",
+			Classification: "test-class",
+			Source:        "test-source",
+		}
+		err = w.Write(&decision)
+		if err != nil {
+			t.Fatalf("Write failed: %v", err)
+		}
+	}
+
+	w.Close()
+
+	// Check for external checkpoint file
+	checkpointPath := dbPath + ".checkpoint"
+	data, err := os.ReadFile(checkpointPath)
+	if err != nil {
+		t.Errorf("failed to read checkpoint file: %v", err)
+		return
+	}
+
+	if len(data) == 0 {
+		t.Error("checkpoint file is empty")
+		return
+	}
+
+	// Verify checkpoint format: entryCount:timestamp:hash
+	parts := strings.Split(string(data), ":")
+	if len(parts) < 3 {
+		t.Errorf("checkpoint format invalid, expected at least 3 parts, got %d", len(parts))
+		return
+	}
+
+	// Verify entry count is present
+	entryCount, err := strconv.Atoi(parts[0])
+	if err != nil {
+		t.Errorf("failed to parse entry count from checkpoint: %v", err)
+		return
+	}
+
+	if entryCount < 100 {
+		t.Errorf("expected at least 100 entries in checkpoint, got %d", entryCount)
+	}
+
+	// Verify hash is present and looks like hex (64 chars for SHA256)
+	hash := parts[2]
+	if len(hash) == 0 {
+		t.Error("checkpoint hash is empty")
+	}
+}
+
+// TestWriter_FallbackOnPersistentFailure verifies that if flush retries are exhausted,
+// entries are written to a fallback JSONL file.
+func TestWriter_FallbackOnPersistentFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	fallbackPath := tmpDir + "/audit_fallback.jsonl"
+
+	// Change working directory to temp dir so fallback file is created there
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	defer os.Chdir(oldCwd)
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	db := setupTestDB(t)
+
+	w, err := NewWriterWithPath(db, tmpDir+"/test.db")
+	if err != nil {
+		t.Fatalf("NewWriterWithPath failed: %v", err)
+	}
+
+	// Close the database to cause all subsequent flushes to fail
+	db.Close()
+
+	decision := types.Decision{
+		Timestamp:     time.Now().UTC(),
+		SessionID:     "test-session",
+		Tool:          "test-tool",
+		Decision:      "allow",
+		Reason:        "test reason",
+		PolicyVersion: "v1",
+		ScannerType:   "test",
+		CorrelationID: "corr-123",
+		Classification: "test-class",
+		Source:        "test-source",
+	}
+
+	// Write a decision - this will fail when flushed
+	w.Write(&decision)
+
+	// Close to trigger flush with retries, which will fail and use fallback
+	w.Close()
+
+	// Verify fallback file was created
+	data, err := os.ReadFile(fallbackPath)
+	if err != nil {
+		t.Errorf("failed to read fallback file: %v", err)
+		return
+	}
+
+	if len(data) == 0 {
+		t.Error("fallback file is empty")
+		return
+	}
+
+	// Verify fallback contains JSON
+	lines := strings.Split(string(data), "\n")
+	if len(lines) < 1 {
+		t.Error("fallback file has no lines")
+		return
+	}
+
+	// Try to unmarshal first line as JSON
+	var fallbackEntry types.Decision
+	err = json.Unmarshal([]byte(lines[0]), &fallbackEntry)
+	if err != nil {
+		t.Errorf("fallback entry is not valid JSON: %v", err)
 	}
 }

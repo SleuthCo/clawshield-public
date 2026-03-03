@@ -1303,6 +1303,108 @@ func TestMatchDomain(t *testing.T) {
 	}
 }
 
+// TestEvaluateWithDetails_CaseInsensitiveDenylist tests case-insensitive denylist matching
+func TestEvaluateWithDetails_CaseInsensitiveDenylist(t *testing.T) {
+	t.Run("exact denylist match", func(t *testing.T) {
+		policy := &Policy{
+			DefaultAction: Allow,
+			Denylist:      []string{"shell.exec"},
+		}
+		evaluator := NewEvaluator(policy)
+
+		// Should deny both exact case and different case
+		testCases := []string{
+			`{"method":"shell.exec","params":{}}`,
+			`{"method":"Shell.Exec","params":{}}`,
+			`{"method":"SHELL.EXEC","params":{}}`,
+			`{"method":"sHeLL.eXeC","params":{}}`,
+		}
+
+		for _, msg := range testCases {
+			decision, reason, _ := evaluator.EvaluateWithDetails(context.Background(), msg)
+			if decision != Deny {
+				t.Errorf("expected Deny, got %s for message: %s", decision, msg)
+			}
+			if reason != "tool explicitly denied by denylist" {
+				t.Errorf("expected denylist reason, got: %s", reason)
+			}
+		}
+	})
+}
+
+// TestEvaluateWithDetails_CaseInsensitiveAllowlist tests case-insensitive allowlist matching
+func TestEvaluateWithDetails_CaseInsensitiveAllowlist(t *testing.T) {
+	t.Run("case-insensitive allowlist match", func(t *testing.T) {
+		policy := &Policy{
+			DefaultAction: Deny,
+			Allowlist:     []string{"code.generate"},
+		}
+		evaluator := NewEvaluator(policy)
+
+		// Should allow both exact case and different case
+		testCases := []string{
+			`{"method":"code.generate","params":{}}`,
+			`{"method":"Code.Generate","params":{}}`,
+			`{"method":"CODE.GENERATE","params":{}}`,
+			`{"method":"cOdE.gEnErAtE","params":{}}`,
+		}
+
+		for _, msg := range testCases {
+			decision, reason, _ := evaluator.EvaluateWithDetails(context.Background(), msg)
+			if decision != Allow {
+				t.Errorf("expected Allow, got %s for message: %s (reason: %s)", decision, msg, reason)
+			}
+		}
+	})
+}
+
+// TestEvaluateWithDetails_MethodWhitespaceNormalization tests whitespace normalization in method names
+func TestEvaluateWithDetails_MethodWhitespaceNormalization(t *testing.T) {
+	t.Run("method with leading/trailing whitespace", func(t *testing.T) {
+		policy := &Policy{
+			DefaultAction: Deny,
+			Denylist:      []string{"shell.exec"},
+		}
+		evaluator := NewEvaluator(policy)
+
+		// Should normalize whitespace and deny
+		testCases := []string{
+			`{"method":" shell.exec ","params":{}}`,
+			`{"method":"  shell.exec  ","params":{}}`,
+			`{"method":"shell.exec ","params":{}}`,
+			`{"method":" shell.exec","params":{}}`,
+		}
+
+		for _, msg := range testCases {
+			decision, reason, _ := evaluator.EvaluateWithDetails(context.Background(), msg)
+			if decision != Deny {
+				t.Errorf("expected Deny, got %s for message: %s", decision, msg)
+			}
+			if reason != "tool explicitly denied by denylist" {
+				t.Errorf("expected denylist reason, got: %s", reason)
+			}
+		}
+	})
+
+	t.Run("method with internal whitespace normalization", func(t *testing.T) {
+		policy := &Policy{
+			DefaultAction: Deny,
+			Denylist:      []string{"shell exec"},
+		}
+		evaluator := NewEvaluator(policy)
+
+		// Should normalize internal whitespace: "shell  exec" -> "shell exec"
+		msg := `{"method":"shell  exec","params":{}}`
+		decision, reason, _ := evaluator.EvaluateWithDetails(context.Background(), msg)
+		if decision != Deny {
+			t.Errorf("expected Deny, got %s", decision)
+		}
+		if reason != "tool explicitly denied by denylist" {
+			t.Errorf("expected denylist reason, got: %s", reason)
+		}
+	})
+}
+
 // Helper function
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

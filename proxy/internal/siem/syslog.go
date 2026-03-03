@@ -102,7 +102,11 @@ func (s *SyslogTransport) Send(data []byte) error {
 	// RFC 5424 formatted message
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 	// Priority: facility=local0(16)*8 + severity=info(6) = 134
-	msg := fmt.Sprintf("<134>1 %s clawshield clawshield-proxy - - - %s\n", timestamp, string(data))
+	msg := string(data)
+	// SECURITY: Escape newlines and carriage returns to prevent log injection
+	msg = strings.ReplaceAll(msg, "\n", "\\n")
+	msg = strings.ReplaceAll(msg, "\r", "\\r")
+	msg = fmt.Sprintf("<134>1 %s clawshield clawshield-proxy - - - %s\n", timestamp, msg)
 
 	var lastErr error
 	for attempt := 0; attempt <= s.maxRetries; attempt++ {

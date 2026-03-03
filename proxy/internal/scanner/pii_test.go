@@ -506,3 +506,60 @@ func TestValidateIPv4NotPrivate(t *testing.T) {
 		})
 	}
 }
+
+func TestPIIScanner_InternationalPhone(t *testing.T) {
+	s := NewPIIScanner(&PIIConfig{
+		Enabled:      true,
+		ScanRequests: true,
+		Rules:        []string{"phone"},
+	})
+
+	tests := []struct {
+		name    string
+		input   string
+		blocked bool
+	}{
+		{"UK phone E.164", `Contact: +442071234567`, true},
+		{"France phone E.164", `phone: +33123456789`, true},
+		{"Germany phone context", `tel: +49301234567`, true},
+		{"Phone with spaces", `phone: +44 20 7123 4567`, true},
+		{"Short invalid", `+1234`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocked, reason := s.ScanRequest("chat.send", tt.input)
+			if blocked != tt.blocked {
+				t.Errorf("blocked=%v, want %v (reason: %s)", blocked, tt.blocked, reason)
+			}
+		})
+	}
+}
+
+func TestPIIScanner_InternationalPassport(t *testing.T) {
+	s := NewPIIScanner(&PIIConfig{
+		Enabled:      true,
+		ScanRequests: true,
+		Rules:        []string{"passport"},
+	})
+
+	tests := []struct {
+		name    string
+		input   string
+		blocked bool
+	}{
+		{"International passport", `passport number: AB1234567`, true},
+		{"Single letter passport", `passport: A12345678`, true},
+		{"Passport label context", `travel doc number: CD1234567`, true},
+		{"Too short", `passport: A123`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocked, reason := s.ScanRequest("chat.send", tt.input)
+			if blocked != tt.blocked {
+				t.Errorf("blocked=%v, want %v (reason: %s)", blocked, tt.blocked, reason)
+			}
+		})
+	}
+}

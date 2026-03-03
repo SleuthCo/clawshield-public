@@ -34,7 +34,10 @@ type SIEMConfig struct {
 	QueueSize         int    `yaml:"queue_size"`          // default: 10000
 }
 
-const defaultQueueSize = 10000
+const (
+	defaultQueueSize = 10000
+	maxQueueSize     = 10000
+)
 
 // Forwarder receives ClawShield Decision events, filters by severity,
 // converts to OCSF format, and forwards to a SIEM via the configured Transport.

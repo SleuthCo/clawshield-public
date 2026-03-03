@@ -430,3 +430,101 @@ func TestVulnScanner_SSRF_DecimalIP(t *testing.T) {
 		})
 	}
 }
+
+func TestVulnScanner_SSRF_IPv6(t *testing.T) {
+	s := NewVulnScanner(&VulnScanConfig{
+		Enabled: true,
+		Rules:   []string{"ssrf"},
+	})
+
+	tests := []struct {
+		name    string
+		params  string
+		blocked bool
+	}{
+		// IPv6 SSRF patterns
+		{"IPv6 loopback ::1", "url http://[::1]/admin", true},
+		{"IPv6 mapped IPv4 loopback", "url http://[::ffff:127.0.0.1]/admin", true},
+		{"IPv6 full loopback", "url http://[0:0:0:0:0:0:0:1]/admin", true},
+		{"IPv6 mapped any", "url http://[::ffff:0:0]/admin", true},
+		{"IPv6 mapped hex", "url http://[::ffff:7f00:1]/admin", true},
+
+		// Public IPv6 URLs should not be blocked
+		{"public IPv6 URL", "url http://[2001:db8::1]/", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocked, reason := s.Scan("web.fetch", tt.params)
+			if blocked != tt.blocked {
+				t.Errorf("Scan(%q) = blocked:%v, want:%v (reason: %s)", tt.params, blocked, tt.blocked, reason)
+			}
+		})
+	}
+}
+
+func TestVulnScanner_PathTraversal_DoubleEncoded(t *testing.T) {
+	s := NewVulnScanner(&VulnScanConfig{
+		Enabled: true,
+		Rules:   []string{"path_traversal"},
+	})
+
+	tests := []struct {
+		name    string
+		params  string
+		blocked bool
+	}{
+		// Double-encoded path traversal
+		{"double-encoded ../..", "path %252e%252e%252f%252e%252e", true},
+		{"mixed encoding %252e%2e", "path %252e%2e%2fetc", true},
+		{"mixed encoding %2e%252e", "path %2e%252e%2fetc", true},
+		{"double-encoded dot", "path %%32%65%%32%65", true},
+		{"null byte with dot", "path file.txt.%00", true},
+
+		// Normal paths should not be blocked
+		{"normal path", "path /home/user/file.txt", false},
+		{"relative path", "path ./config.yaml", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocked, reason := s.Scan("file.read", tt.params)
+			if blocked != tt.blocked {
+				t.Errorf("Scan(%q) = blocked:%v, want:%v (reason: %s)", tt.params, blocked, tt.blocked, reason)
+			}
+		})
+	}
+}
+
+func TestVulnScanner_SQLi_MySQLConditionalComments(t *testing.T) {
+	s := NewVulnScanner(&VulnScanConfig{
+		Enabled: true,
+		Rules:   []string{"sqli"},
+	})
+
+	tests := []struct {
+		name    string
+		params  string
+		blocked bool
+	}{
+		// MySQL conditional comments
+		{"MySQL 5.0 conditional comment", "query /*!50000 SELECT 1 */", true},
+		{"MySQL 5.1 conditional comment", "query /*!50100 SELECT * FROM users */", true},
+		{"comment-wrapped SELECT", "query /* comment */ SELECT * FROM users", true},
+		{"comment-wrapped UNION", "query /* test */ UNION SELECT password FROM admin", true},
+		{"comment-wrapped INSERT", "query /* hack */ INSERT INTO users VALUES(1,'admin')", true},
+
+		// Normal comments and queries
+		{"normal comment without SQL", "query /* this is a normal comment */ value is set", false},
+		{"normal query", "query SELECT name FROM users", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocked, reason := s.Scan("db.query", tt.params)
+			if blocked != tt.blocked {
+				t.Errorf("Scan(%q) = blocked:%v, want:%v (reason: %s)", tt.params, blocked, tt.blocked, reason)
+			}
+		})
+	}
+}

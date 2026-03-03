@@ -1,6 +1,7 @@
 package iptables
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -208,5 +209,121 @@ func TestDefaultExecutorSplitsArgs(t *testing.T) {
 	err := defaultExecutor("echo", "-A OUTPUT -d 10.0.0.1 -j DROP")
 	if err != nil {
 		t.Errorf("expected echo to succeed with split args, got: %v", err)
+	}
+}
+
+// TestRemoveExpiredConcurrentAccess tests that removeExpired() correctly handles
+// concurrent access without panicking or corrupting state.
+func TestRemoveExpiredConcurrentAccess(t *testing.T) {
+	mock := newMockExecutor()
+	mgr := NewDynamicRuleManagerWithExecutor(mock.execute)
+
+	// Add multiple rules with short expiration
+	for i := 0; i < 10; i++ {
+		rule := fmt.Sprintf("-A OUTPUT -d 10.0.0.%d -j DROP", i+1)
+		err := mgr.AddTemporaryRule(rule, 50*time.Millisecond, "test")
+		if err != nil {
+			t.Fatalf("failed to add rule: %v", err)
+		}
+	}
+
+	// Wait for expiration
+	time.Sleep(100 * time.Millisecond)
+
+	// Call removeExpired from multiple goroutines concurrently
+	done := make(chan bool, 5)
+	for i := 0; i < 5; i++ {
+		go func() {
+			mgr.removeExpired()
+			done <- true
+		}()
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < 5; i++ {
+		<-done
+	}
+
+	// Verify all rules were removed
+	if mgr.ActiveCount() != 0 {
+		t.Errorf("expected 0 active rules after concurrent removal, got %d", mgr.ActiveCount())
+	}
+}
+
+// TestDNSEntryIsStale tests that DNSEntry.IsStale() correctly identifies stale entries.
+func TestDNSEntryIsStale(t *testing.T) {
+	tests := []struct {
+		name    string
+		entry   DNSEntry
+		wantErr bool
+	}{
+		{
+			name: "fresh_entry",
+			entry: DNSEntry{
+				IPs:        []string{"192.168.1.1"},
+				ResolvedAt: time.Now(),
+				TTL:        5 * time.Minute,
+			},
+			wantErr: false,
+		},
+		{
+			name: "slightly_stale_entry",
+			entry: DNSEntry{
+				IPs:        []string{"192.168.1.1"},
+				ResolvedAt: time.Now().Add(-6 * time.Minute),
+				TTL:        5 * time.Minute,
+			},
+			wantErr: true,
+		},
+		{
+			name: "very_stale_entry",
+			entry: DNSEntry{
+				IPs:        []string{"192.168.1.1"},
+				ResolvedAt: time.Now().Add(-1 * time.Hour),
+				TTL:        5 * time.Minute,
+			},
+			wantErr: true,
+		},
+		{
+			name: "entry_at_ttl_boundary",
+			entry: DNSEntry{
+				IPs:        []string{"192.168.1.1"},
+				ResolvedAt: time.Now().Add(-5 * time.Minute),
+				TTL:        5 * time.Minute,
+			},
+			wantErr: true, // At boundary, considered stale
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isStale := tt.entry.IsStale()
+			if isStale != tt.wantErr {
+				t.Errorf("IsStale() = %v, want %v", isStale, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestDNSEntryMultipleIPs tests that DNSEntry can store multiple IP addresses.
+func TestDNSEntryMultipleIPs(t *testing.T) {
+	entry := DNSEntry{
+		IPs:        []string{"192.168.1.1", "192.168.1.2", "10.0.0.1"},
+		ResolvedAt: time.Now(),
+		TTL:        5 * time.Minute,
+	}
+
+	if len(entry.IPs) != 3 {
+		t.Errorf("expected 3 IPs, got %d", len(entry.IPs))
+	}
+
+	if entry.IsStale() {
+		t.Error("expected fresh entry to not be stale")
+	}
+
+	// Advance time past TTL
+	entry.ResolvedAt = time.Now().Add(-6 * time.Minute)
+	if !entry.IsStale() {
+		t.Error("expected expired entry to be stale")
 	}
 }

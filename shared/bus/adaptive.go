@@ -9,6 +9,13 @@ import (
 	"github.com/SleuthCo/clawshield/shared/types"
 )
 
+// MaxThreatScore is the upper bound for accumulated threat score.
+// This prevents runaway escalation from burst events causing cascading over-restriction.
+const MaxThreatScore = 100
+
+// maxEventsPerKey caps the number of timestamps stored per event key to prevent unbounded memory growth.
+const maxEventsPerKey = 10000
+
 // AdaptiveController subscribes to the event bus and applies cross-layer
 // response rules. When events from one layer match a trigger condition,
 // the controller fires an action that adjusts another layer's behavior.
@@ -24,6 +31,7 @@ type AdaptiveController struct {
 	lastDecay      time.Time // When threatScore was last decayed
 	eventCounts    map[string][]time.Time // Sliding window event counts keyed by "source:type"
 	activeOverrides map[string]*Override  // Currently active behavioral overrides
+	sourceTracker  *sourceTracker         // Per-source event tracking
 
 	// Callbacks invoked when an adaptive action fires.
 	// These are set by the layer that hosts the controller (typically the proxy).
@@ -54,8 +62,70 @@ func NewAdaptiveController(bus *EventBus, rules []types.AdaptiveRule) *AdaptiveC
 		lastDecay:       time.Now(),
 		eventCounts:     make(map[string][]time.Time),
 		activeOverrides: make(map[string]*Override),
+		sourceTracker:   newSourceTracker(),
 		quit:            make(chan struct{}),
 	}
+}
+
+// sourceTracker provides per-source event tracking to isolate
+// threat assessment per origin rather than globally.
+type sourceTracker struct {
+	mu     sync.Mutex
+	counts map[string][]time.Time // source -> event timestamps
+}
+
+func newSourceTracker() *sourceTracker {
+	return &sourceTracker{
+		counts: make(map[string][]time.Time),
+	}
+}
+
+func (st *sourceTracker) recordEvent(source string, t time.Time) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.counts[source] = append(st.counts[source], t)
+	// Bound per-source entries
+	if len(st.counts[source]) > maxEventsPerKey {
+		st.counts[source] = st.counts[source][len(st.counts[source])-maxEventsPerKey:]
+	}
+}
+
+func (st *sourceTracker) countInWindow(source string, window time.Duration) int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cutoff := time.Now().Add(-window)
+	events := st.counts[source]
+	count := 0
+	for _, t := range events {
+		if t.After(cutoff) {
+			count++
+		}
+	}
+	return count
+}
+
+func (st *sourceTracker) cleanup(maxAge time.Duration) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cutoff := time.Now().Add(-maxAge)
+	for source, events := range st.counts {
+		var kept []time.Time
+		for _, t := range events {
+			if t.After(cutoff) {
+				kept = append(kept, t)
+			}
+		}
+		if len(kept) == 0 {
+			delete(st.counts, source)
+		} else {
+			st.counts[source] = kept
+		}
+	}
+}
+
+// SourceEventCount returns the number of events from a source within a time window.
+func (ac *AdaptiveController) SourceEventCount(source string, window time.Duration) int {
+	return ac.sourceTracker.countInWindow(source, window)
 }
 
 // Start begins consuming events from the bus and evaluating adaptive rules.
@@ -121,8 +191,13 @@ func (ac *AdaptiveController) handleEvent(event *types.SecurityEvent) {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 
-	// Update threat score based on event severity
-	ac.threatScore += event.Severity.Weight()
+	// Update threat score based on event severity, capped at MaxThreatScore
+	newScore := ac.threatScore + event.Severity.Weight()
+	if newScore > MaxThreatScore {
+		ac.threatScore = MaxThreatScore
+	} else {
+		ac.threatScore = newScore
+	}
 
 	// Decay threat score over time (lose 1 point per 30 seconds of inactivity)
 	now := time.Now()
@@ -139,6 +214,13 @@ func (ac *AdaptiveController) handleEvent(event *types.SecurityEvent) {
 	// Record event in sliding window
 	key := fmt.Sprintf("%s:%s", event.Source, event.EventType)
 	ac.eventCounts[key] = append(ac.eventCounts[key], now)
+	// Bound event counts per key to prevent unbounded memory growth
+	if len(ac.eventCounts[key]) > maxEventsPerKey {
+		ac.eventCounts[key] = ac.eventCounts[key][len(ac.eventCounts[key])-maxEventsPerKey:]
+	}
+
+	// Record per-source event
+	ac.sourceTracker.recordEvent(string(event.Source), now)
 
 	// Evaluate rules
 	for _, rule := range ac.rules {
@@ -237,22 +319,30 @@ func (ac *AdaptiveController) dispatchAction(action string, event *types.Securit
 				}
 			}
 			ac.OnElevateSensitivity(level, duration)
+		} else {
+			log.Printf("SECURITY WARNING: adaptive rule triggered action=%s but OnElevateSensitivity callback is nil", action)
 		}
 
 	case "restrict_domains":
 		if ac.OnRestrictDomains != nil {
 			ac.OnRestrictDomains(duration)
+		} else {
+			log.Printf("SECURITY WARNING: adaptive rule triggered action=%s but OnRestrictDomains callback is nil", action)
 		}
 
 	case "elevate_default_deny":
 		if ac.OnElevateDefaultDeny != nil {
 			ac.OnElevateDefaultDeny(duration)
+		} else {
+			log.Printf("SECURITY WARNING: adaptive rule triggered action=%s but OnElevateDefaultDeny callback is nil", action)
 		}
 
 	case "block_session":
 		if ac.OnBlockSession != nil {
 			sessionID := event.SessionID
 			ac.OnBlockSession(sessionID, duration)
+		} else {
+			log.Printf("SECURITY WARNING: adaptive rule triggered action=%s but OnBlockSession callback is nil", action)
 		}
 
 	case "add_temp_firewall_rule":
@@ -264,6 +354,8 @@ func (ac *AdaptiveController) dispatchAction(action string, event *types.Securit
 			if ip != "" {
 				ac.OnAddTempFirewallRule(ip, duration)
 			}
+		} else {
+			log.Printf("SECURITY WARNING: adaptive rule triggered action=%s but OnAddTempFirewallRule callback is nil", action)
 		}
 
 	default:
@@ -341,6 +433,9 @@ func (ac *AdaptiveController) cleanup() {
 		}
 		ac.lastDecay = now
 	}
+
+	// Clean up per-source tracker (uses its own mutex, so safe to call here)
+	ac.sourceTracker.cleanup(5 * time.Minute)
 }
 
 func eventTypeForAction(action string) types.EventType {

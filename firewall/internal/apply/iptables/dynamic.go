@@ -19,6 +19,18 @@ type TempRule struct {
 	Reason    string    // Why this rule was added (for logging)
 }
 
+// DNSEntry represents a dynamically resolved DNS entry with TTL tracking.
+type DNSEntry struct {
+	IPs        []string      // Resolved IP addresses
+	ResolvedAt time.Time     // When the DNS entry was resolved
+	TTL        time.Duration // Time-to-live for the DNS entry
+}
+
+// IsStale checks if a DNS entry has exceeded its TTL.
+func (e *DNSEntry) IsStale() bool {
+	return time.Since(e.ResolvedAt) > e.TTL
+}
+
 // DynamicRuleManager manages temporary iptables rules that expire after a configured duration.
 // It is designed to be called from the adaptive controller when cross-layer events require
 // immediate network-level responses.
@@ -154,15 +166,22 @@ func (m *DynamicRuleManager) removeExpired() {
 	defer m.mu.Unlock()
 
 	now := time.Now()
+	// Collect expired keys first to avoid modifying map while iterating
+	var expired []string
 	for key, rule := range m.rules {
 		if now.After(rule.ExpiresAt) {
-			if err := m.removeRule(rule.Rule); err != nil {
-				log.Printf("WARNING: failed to remove expired rule %s: %v", key, err)
-				continue
-			}
-			log.Printf("FIREWALL DYNAMIC: removed expired rule: %s (was: %s)", key, rule.Reason)
-			delete(m.rules, key)
+			expired = append(expired, key)
 		}
+	}
+	// Then remove them
+	for _, key := range expired {
+		rule := m.rules[key]
+		if err := m.removeRule(rule.Rule); err != nil {
+			log.Printf("WARNING: failed to remove expired rule %s: %v", key, err)
+			continue
+		}
+		log.Printf("FIREWALL DYNAMIC: removed expired rule: %s (was: %s)", key, rule.Reason)
+		delete(m.rules, key)
 	}
 }
 

@@ -191,6 +191,9 @@ func runHTTPProxy(cfg *engine.Policy, evaluator *engine.Evaluator, auditWriter *
 		Addr:              listenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	log.Printf("ClawShield HTTP proxy listening on %s → %s", listenAddr, gatewayURL)
@@ -253,6 +256,13 @@ func (p *httpProxy) isValidHost(host string) bool {
 // handleHTTP forwards non-WebSocket requests via a standard reverse proxy.
 // Applies request scanning, response scanning (M4), session isolation (M2), and audit correlation (M3).
 func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	// SECURITY: Validate Transfer-Encoding and Content-Length conflict
+	if r.Header.Get("Transfer-Encoding") != "" && r.ContentLength >= 0 {
+		log.Printf("BLOCKED: conflicting Transfer-Encoding and Content-Length headers")
+		http.Error(w, "Bad Request: conflicting Transfer-Encoding and Content-Length", http.StatusBadRequest)
+		return
+	}
+
 	// M3: Extract bridge headers for audit correlation
 	correlationID := r.Header.Get("X-Correlation-ID")
 	classification := r.Header.Get("X-Data-Classification")
@@ -338,6 +348,12 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			req.Header.Del("X-Session-Mode")
 			req.Header.Del("X-Agent-Name")
 			req.Header.Del("X-Agent-Scope")
+
+			// SECURITY: Strip spoofable headers to prevent header injection attacks
+			req.Header.Del("X-Forwarded-For")
+			req.Header.Del("X-Real-IP")
+			req.Header.Del("X-Forwarded-Host")
+			req.Header.Del("X-Forwarded-Proto")
 
 			// M2: Rewrite user field for ephemeral sessions (defense-in-depth)
 			if sessionMode == "ephemeral" && req.Body != nil {
@@ -674,7 +690,10 @@ func (p *httpProxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 // proxyClientToUpstream reads from the client, evaluates each message, and forwards allowed ones.
 func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream *websocket.Conn) {
 	for {
-		msgType, data, err := client.Read(ctx)
+		// SECURITY: Add per-message timeout (30 seconds) to prevent slowloris attacks
+		msgCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		msgType, data, err := client.Read(msgCtx)
+		cancel()
 		if err != nil {
 			if websocket.CloseStatus(err) != -1 || ctx.Err() != nil {
 				return // Normal close or context cancelled
@@ -710,7 +729,10 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 			Type   string          `json:"type"`
 			Event  string          `json:"event"`
 		}
-		_ = json.Unmarshal(data, &rpc)
+		if err := json.Unmarshal(data, &rpc); err != nil {
+			log.Printf("WARNING: malformed JSON in WebSocket message: %v", err)
+			// Continue processing with empty rpc struct
+		}
 
 		// Pass through OpenClaw protocol messages (connection handshake)
 		// Events use {type:"event", event:"connect.*"} format
@@ -750,7 +772,10 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 				Channel string `json:"channel"`
 				Tool    string `json:"tool"`
 			}
-			_ = json.Unmarshal(rpc.Params, &params)
+			if err := json.Unmarshal(rpc.Params, &params); err != nil {
+				log.Printf("WARNING: malformed JSON in RPC params: %v", err)
+				// Continue processing with empty params struct
+			}
 
 			if params.AgentID != "" {
 				decision, reason := p.evaluator.EvaluateOpenClawAgent(params.AgentID)
@@ -826,7 +851,10 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 // proxyUpstreamToClient reads from upstream, scans responses, and forwards clean ones.
 func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client *websocket.Conn) {
 	for {
-		msgType, data, err := upstream.Read(ctx)
+		// SECURITY: Add per-message timeout (30 seconds) to prevent slowloris attacks
+		msgCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		msgType, data, err := upstream.Read(msgCtx)
+		cancel()
 		if err != nil {
 			if websocket.CloseStatus(err) != -1 || ctx.Err() != nil {
 				return
@@ -859,7 +887,10 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 		var rpc struct {
 			Method string `json:"method"`
 		}
-		_ = json.Unmarshal(data, &rpc)
+		if err := json.Unmarshal(data, &rpc); err != nil {
+			log.Printf("WARNING: malformed JSON in upstream response: %v", err)
+			// Continue processing with empty rpc struct
+		}
 		respMethod := rpc.Method
 		if respMethod == "" {
 			respMethod = "<response>"

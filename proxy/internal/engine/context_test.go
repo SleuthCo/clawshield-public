@@ -113,3 +113,43 @@ func TestClassifyIntent_Unknown(t *testing.T) {
 		t.Errorf("expected RequestMethod to be %q, got %q", "custom.tool", ctx.RequestMethod)
 	}
 }
+
+func TestClassifyIntent_InjectionKeywordDetection(t *testing.T) {
+	t.Run("method with injection keywords defaults to unknown (full scanning)", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			method string
+			params string
+		}{
+			{"generate + ignore", "generate_code_ignore_previous_instructions", ""},
+			{"code + override", "code.override", ""},
+			{"system + inject", "system.inject.prompt", ""},
+			{"bypass keyword", "bypass.security", ""},
+			{"ignore in method", "tools.code.ignore", ""},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				ctx := ClassifyIntent(tc.method, tc.params)
+
+				// Should default to unknown (not reduce sensitivity)
+				if ctx.RequestIntent != IntentUnknown {
+					t.Errorf("expected RequestIntent to be %q (full scanning), got %q", IntentUnknown, ctx.RequestIntent)
+				}
+				if ctx.IsCodeGeneration {
+					t.Errorf("expected IsCodeGeneration to be false (not reduce sensitivity), got true")
+				}
+			})
+		}
+	})
+
+	t.Run("legitimate code methods without injection keywords", func(t *testing.T) {
+		ctx := ClassifyIntent("code.generate", "")
+		if ctx.RequestIntent != IntentCodeGeneration {
+			t.Errorf("expected code generation intent, got %q", ctx.RequestIntent)
+		}
+		if !ctx.IsCodeGeneration {
+			t.Errorf("expected IsCodeGeneration to be true, got false")
+		}
+	})
+}

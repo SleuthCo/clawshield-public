@@ -211,9 +211,13 @@ func (e *Evaluator) EvaluateWithDetails(ctx context.Context, message string) (st
 		return Deny, "invalid params JSON in JSON-RPC", detail
 	}
 
+	// Canonicalize method name: trim whitespace, collapse internal whitespace
+	method := strings.TrimSpace(rpc.Method)
+	method = strings.Join(strings.Fields(method), " ")
+
 	// Check denylist first (highest priority)
 	for _, deniedTool := range e.policy.Denylist {
-		if rpc.Method == deniedTool {
+		if strings.EqualFold(method, deniedTool) {
 			detail.PipelineStage = "denylist"
 			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
 			e.recordActiveOverrides(detail)
@@ -226,7 +230,7 @@ func (e *Evaluator) EvaluateWithDetails(ctx context.Context, message string) (st
 	inAllowlist := false
 	if len(e.policy.Allowlist) > 0 {
 		for _, allowedTool := range e.policy.Allowlist {
-			if rpc.Method == allowedTool {
+			if strings.EqualFold(method, allowedTool) {
 				inAllowlist = true
 				break
 			}
@@ -241,7 +245,7 @@ func (e *Evaluator) EvaluateWithDetails(ctx context.Context, message string) (st
 
 	// Apply argument filters on DECODED string values (not raw JSON bytes)
 	// This defeats unicode escape bypass attacks
-	if compiledRe, exists := e.argFilterRegex[rpc.Method]; exists {
+	if compiledRe, exists := e.argFilterRegex[method]; exists {
 		select {
 		case <-ctx.Done():
 			detail.PipelineStage = "timeout"
@@ -260,7 +264,7 @@ func (e *Evaluator) EvaluateWithDetails(ctx context.Context, message string) (st
 	}
 
 	// Domain allowlist for web.* tools
-	if strings.HasPrefix(rpc.Method, "web.") && len(e.policy.DomainAllowlist) > 0 {
+	if strings.HasPrefix(method, "web.") && len(e.policy.DomainAllowlist) > 0 {
 		select {
 		case <-ctx.Done():
 			detail.PipelineStage = "timeout"
@@ -327,7 +331,7 @@ func (e *Evaluator) EvaluateWithDetails(ctx context.Context, message string) (st
 		default:
 		}
 		decoded := decodeJSONStrings(rpc.Params)
-		if scanResult := e.vulnScanner.ScanDetail(rpc.Method, decoded); scanResult != nil {
+		if scanResult := e.vulnScanner.ScanDetail(method, decoded); scanResult != nil {
 			detail.PipelineStage = "vuln_scan"
 			detail.ScanResults = append(detail.ScanResults, *scanResult)
 			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
@@ -346,7 +350,7 @@ func (e *Evaluator) EvaluateWithDetails(ctx context.Context, message string) (st
 		default:
 		}
 		decoded := decodeJSONStrings(rpc.Params)
-		if scanResult := e.injectionDetector.ScanRequestDetail(rpc.Method, decoded); scanResult != nil {
+		if scanResult := e.injectionDetector.ScanRequestDetail(method, decoded); scanResult != nil {
 			detail.PipelineStage = "injection_scan"
 			detail.ScanResults = append(detail.ScanResults, *scanResult)
 			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
@@ -365,7 +369,7 @@ func (e *Evaluator) EvaluateWithDetails(ctx context.Context, message string) (st
 		default:
 		}
 		decoded := decodeJSONStrings(rpc.Params)
-		if scanResult := e.secretsScanner.ScanRequestDetail(rpc.Method, decoded); scanResult != nil {
+		if scanResult := e.secretsScanner.ScanRequestDetail(method, decoded); scanResult != nil {
 			detail.PipelineStage = "secrets_scan"
 			detail.ScanResults = append(detail.ScanResults, *scanResult)
 			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
@@ -384,7 +388,7 @@ func (e *Evaluator) EvaluateWithDetails(ctx context.Context, message string) (st
 		default:
 		}
 		decoded := decodeJSONStrings(rpc.Params)
-		if scanResult := e.piiScanner.ScanRequestDetail(rpc.Method, decoded); scanResult != nil {
+		if scanResult := e.piiScanner.ScanRequestDetail(method, decoded); scanResult != nil {
 			detail.PipelineStage = "pii_scan"
 			detail.ScanResults = append(detail.ScanResults, *scanResult)
 			detail.EvalDurationMs = time.Since(startTime).Seconds() * 1000
