@@ -71,12 +71,13 @@ func main() {
 	}
 
 	// Load policy configuration
-	cfg, err := config.Load(fullPolicyPath)
+	cfg, policyVersion, err := config.LoadWithVersion(fullPolicyPath)
 	if err != nil {
 		log.Fatalf("Failed to load policy: %v", err)
 	}
 
 	evaluator := engine.NewEvaluator(cfg)
+	evaluator.SetPolicyVersion(policyVersion)
 
 	// Initialize audit writer if DB path provided
 	auditWriter, auditDB2 := initAudit(*auditDB)
@@ -170,7 +171,19 @@ func main() {
 			os.Exit(0)
 		}()
 
-		if err := runHTTPProxy(cfg, evaluator, auditWriter, auditDB2, *gatewayURL, *gatewayToken, *studioToken, *listenAddr, sessionID, *standalone, *controlUIDir, eventBus); err != nil {
+		// Create policy reloader for hot-reload support
+		reloader := config.NewPolicyReloader(fullPolicyPath, evaluator, policyVersion,
+			config.WithOnReload(func(oldVer, newVer string) {
+				log.Printf("Policy hot-reloaded: %s -> %s", oldVer, newVer)
+			}),
+			config.WithOnError(func(err error) {
+				log.Printf("WARNING: policy reload failed: %v", err)
+			}),
+		)
+		reloader.Start()
+		defer reloader.Stop()
+
+		if err := runHTTPProxy(cfg, evaluator, reloader, auditWriter, auditDB2, *gatewayURL, *gatewayToken, *studioToken, *listenAddr, sessionID, *standalone, *controlUIDir, eventBus); err != nil {
 			log.Fatalf("HTTP proxy error: %v", err)
 		}
 	} else {

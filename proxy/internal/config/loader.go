@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
@@ -10,6 +12,33 @@ import (
 	"github.com/SleuthCo/clawshield/proxy/internal/engine"
 	"gopkg.in/yaml.v3"
 )
+
+// ComputePolicyVersion computes a content-hash-based version ID for a policy file.
+// The version is the first 8 hex characters of the SHA256 hash of the file content.
+// This provides a stable, content-addressable version that changes whenever the
+// file content changes.
+func ComputePolicyVersion(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read policy file for versioning: %w", err)
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])[:8], nil
+}
+
+// LoadWithVersion loads a policy file and computes its content-hash version.
+// Returns the policy, version string, and any error.
+func LoadWithVersion(path string) (*engine.Policy, string, error) {
+	policy, err := Load(path)
+	if err != nil {
+		return nil, "", err
+	}
+	version, err := ComputePolicyVersion(path)
+	if err != nil {
+		return nil, "", err
+	}
+	return policy, version, nil
+}
 
 // SECURITY: These are checked at config-load time to prevent obvious SSRF.
 // DNS resolution is intentionally NOT performed at config time because:
