@@ -77,6 +77,7 @@ type OpenClawConfig struct {
 
 type Evaluator struct {
 	policy             *Policy
+	policyVersion      string
 	argFilterRegex     map[string]*regexp.Regexp
 	vulnScanner        *scanner.VulnScanner
 	injectionDetector  *scanner.InjectionDetector
@@ -90,6 +91,30 @@ type Evaluator struct {
 	sensitivityOverrideExp time.Time
 	defaultActionOverride    string
 	defaultActionOverrideExp time.Time
+}
+
+// PolicyVersion returns the content-hash version of the policy that this
+// evaluator was created with. Empty if not set.
+func (e *Evaluator) PolicyVersion() string {
+	return e.policyVersion
+}
+
+// SetPolicyVersion sets the policy version hash. Called by the config loader
+// after creating the evaluator.
+func (e *Evaluator) SetPolicyVersion(version string) {
+	e.policyVersion = version
+}
+
+// Policy returns a defensive copy of the policy this evaluator was created with.
+// Used by the reloader to compute diffs between old and new policies.
+// Returns a copy to prevent external mutation of the active policy.
+func (e *Evaluator) GetPolicy() *Policy {
+	if e.policy == nil {
+		return nil
+	}
+	// Create a shallow copy to prevent mutation of the original policy
+	policyCopy := *e.policy
+	return &policyCopy
 }
 
 func NewEvaluator(policy *Policy) *Evaluator {

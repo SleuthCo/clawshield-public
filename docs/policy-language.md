@@ -381,3 +381,41 @@ See `/policy/examples/` for sample policies covering:
 - Start with conservative `duration_seconds` values and tune based on your threat model.
 
 > **Note**: This schema is versioned. Ensure your validator and policy versions are compatible.
+
+## Policy Hot-Reload
+
+ClawShield supports hot-reloading of policy files without proxy restart. When the policy file is modified, ClawShield automatically:
+
+1. Detects the change (polls every 5 seconds by default)
+2. Validates the new policy YAML
+3. Creates a new evaluator with the new policy
+4. Atomically swaps the evaluator (in-flight requests complete with old policy)
+5. Logs the diff between old and new policies
+
+### Policy Versioning
+
+Every policy version gets a content-hash-based version ID (first 8 hex chars of SHA256). This version appears in:
+- Audit log entries (`policy_version` field)
+- Reload log messages
+- SIEM events
+
+### Shadow/Canary Mode
+
+To test a policy change before enforcing it, enable shadow mode in the reloader configuration. In shadow mode:
+- The new policy is loaded and evaluated in parallel
+- Shadow decisions are logged with a `shadow:` prefix
+- The active policy remains unchanged
+- Compare shadow logs to production logs to validate the change
+
+### Reload Behavior
+
+- **Invalid YAML**: Rejected, old policy remains active, error logged
+- **Same content**: No reload (detected via content hash)
+- **SIGHUP signal**: Forces immediate reload
+- **Rate**: One reload check per interval (default 5s), no rapid-fire reloads
+
+### Example Reload Log
+
+```
+POLICY RELOADED: version a1b2c3d4 → e5f6g7h8 (diff: default_action: allow → deny, allowlist: +2 entries: tools.new, tools.extra, vuln_scan: disabled → enabled)
+```

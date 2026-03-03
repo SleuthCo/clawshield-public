@@ -28,6 +28,7 @@ import (
 
 	"github.com/SleuthCo/clawshield/proxy/internal/audit/hashlined"
 	"github.com/SleuthCo/clawshield/proxy/internal/audit/sqlite"
+	"github.com/SleuthCo/clawshield/proxy/internal/config"
 	"github.com/SleuthCo/clawshield/proxy/internal/engine"
 	"github.com/SleuthCo/clawshield/proxy/internal/metrics"
 	"github.com/SleuthCo/clawshield/shared/bus"
@@ -93,6 +94,7 @@ type httpProxy struct {
 	authToken      string
 	studioToken    string // HMAC signing key for Studio tickets (same as STUDIO_ACCESS_TOKEN)
 	evaluator      *engine.Evaluator
+	reloader       *config.PolicyReloader
 	auditWriter    *sqlite.Writer
 	auditDB        *sql.DB
 	sessionID      string
@@ -106,8 +108,38 @@ type httpProxy struct {
 	wsLimiter      *wsRateLimiter
 }
 
+// getEvaluator returns the currently active evaluator. If a policy reloader
+// is configured (gateway mode), it returns the latest reloaded evaluator via
+// atomic load. Otherwise falls back to the direct evaluator field (stdio mode).
+//
+// SECURITY: All evaluator access must go through this method to ensure
+// atomicity in gateway mode. Direct access to p.evaluator bypasses the
+// atomic swap mechanism and must never be used in request handlers.
+func (p *httpProxy) getEvaluator() *engine.Evaluator {
+	if p.reloader != nil {
+		return p.reloader.GetEvaluator()
+	}
+	if p.evaluator == nil {
+		log.Printf("SECURITY WARNING: evaluator is nil in stdio mode")
+		return nil
+	}
+	return p.evaluator
+}
+
+// getPolicyVersion returns the current policy version hash for audit logging.
+func (p *httpProxy) getPolicyVersion() string {
+	if p.reloader != nil {
+		return p.reloader.Version()
+	}
+	eval := p.evaluator
+	if eval != nil {
+		return eval.PolicyVersion()
+	}
+	return "1.0"
+}
+
 // runHTTPProxy starts the HTTP reverse proxy mode.
-func runHTTPProxy(cfg *engine.Policy, evaluator *engine.Evaluator, auditWriter *sqlite.Writer, auditDB *sql.DB,
+func runHTTPProxy(cfg *engine.Policy, evaluator *engine.Evaluator, reloader *config.PolicyReloader, auditWriter *sqlite.Writer, auditDB *sql.DB,
 	gatewayURL, authToken, studioToken, listenAddr string, sessionID string, standalone bool, controlUIDir string, eventBus *bus.EventBus) error {
 
 	gw, err := url.Parse(gatewayURL)
@@ -129,6 +161,7 @@ func runHTTPProxy(cfg *engine.Policy, evaluator *engine.Evaluator, auditWriter *
 		authToken:      authToken,
 		studioToken:    studioToken,
 		evaluator:      evaluator,
+		reloader:       reloader,
 		auditWriter:    auditWriter,
 		auditDB:        auditDB,
 		sessionID:      sessionID,
@@ -304,7 +337,7 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		ct := r.Header.Get("Content-Type")
 		if strings.Contains(ct, "application/json") && len(bodyBytes) > 0 {
 			evalCtx, evalCancel := context.WithTimeout(r.Context(), time.Duration(p.timeoutMs)*time.Millisecond)
-			decision, reason, details := p.evaluator.EvaluateWithDetails(evalCtx, string(bodyBytes))
+			decision, reason, details := p.getEvaluator().EvaluateWithDetails(evalCtx, string(bodyBytes))
 			evalCancel()
 
 			p.logBridgeDecisionWithDetails(r.Method+" "+r.URL.Path, string(bodyBytes), decision, reason,
@@ -367,14 +400,14 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			// Streaming response detection: SSE or NDJSON streams are scanned
 			// chunk-by-chunk using a StreamScanner instead of buffering the entire body.
 			if engine.IsStreamingContentType(ct) {
-				if p.evaluator.InjectionDetector() != nil || p.evaluator.MalwareScanner() != nil ||
-					p.evaluator.SecretsScanner() != nil || p.evaluator.PIIScanner() != nil {
+				if p.getEvaluator().InjectionDetector() != nil || p.getEvaluator().MalwareScanner() != nil ||
+					p.getEvaluator().SecretsScanner() != nil || p.getEvaluator().PIIScanner() != nil {
 					p.metrics.RecordResponseScanned()
 
 					// Create StreamScanner with request context for context-carrying
 					requestMethod := r.Method + " " + r.URL.Path
 					requestBody := "" // Request body was already consumed; use URL path as context
-					streamScanner := p.evaluator.NewStreamScanner(requestMethod, requestBody)
+					streamScanner := p.getEvaluator().NewStreamScanner(requestMethod, requestBody)
 					isSSE := strings.Contains(strings.ToLower(ct), "text/event-stream")
 
 					// Wrap the response body with a scanning reader that processes
@@ -426,7 +459,7 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 								ArgumentsHash:   fmt.Sprintf("stream_chunks=%d", ss.ChunkCount()),
 								Decision:        result.Decision,
 								Reason:          result.Reason,
-								PolicyVersion:   "1.0",
+								PolicyVersion:   p.getPolicyVersion(),
 								CorrelationID:   correlationID,
 								Classification:  classification,
 								Source:          source,
@@ -491,7 +524,7 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				scannerType := ""
 
 				evalCtx, evalCancel := context.WithTimeout(r.Context(), time.Duration(p.timeoutMs)*time.Millisecond)
-				respResult := p.evaluator.EvaluateResponse(evalCtx, "chat/completions", content)
+				respResult := p.getEvaluator().EvaluateResponse(evalCtx, "chat/completions", content)
 				evalCancel()
 
 				if respResult.Decision == engine.Deny {
@@ -520,7 +553,7 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 				// Layer 3: Agent scope validation
 				if !respBlocked && len(agentScopes) > 0 {
-					scopeD, scopeR := p.evaluator.EvaluateAgentScope(content, agentScopes)
+					scopeD, scopeR := p.getEvaluator().EvaluateAgentScope(content, agentScopes)
 					if scopeD == engine.Deny {
 						respBlocked = true
 						respReason = scopeR
@@ -537,7 +570,7 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 						ArgumentsHash:   fmt.Sprintf("http_response_size=%d", len(bodyBytes)),
 						Decision:        respResult.Decision,
 						Reason:          respReason,
-						PolicyVersion:   "1.0",
+						PolicyVersion:   p.getPolicyVersion(),
 						ScannerType:     scannerType,
 						CorrelationID:   correlationID,
 						Classification:  classification,
@@ -753,7 +786,7 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 			_ = json.Unmarshal(rpc.Params, &params)
 
 			if params.AgentID != "" {
-				decision, reason := p.evaluator.EvaluateOpenClawAgent(params.AgentID)
+				decision, reason := p.getEvaluator().EvaluateOpenClawAgent(params.AgentID)
 				if decision == engine.Deny {
 					log.Printf("BLOCKED: agent=%s reason=%s", params.AgentID, reason)
 					p.logDecision(rpc.Method, "agent:"+params.AgentID, "deny", reason)
@@ -764,7 +797,7 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 
 			// Channel-specific tool check
 			if params.Channel != "" && params.Tool != "" {
-				decision, reason := p.evaluator.EvaluateOpenClawChannel(params.Channel, params.Tool)
+				decision, reason := p.getEvaluator().EvaluateOpenClawChannel(params.Channel, params.Tool)
 				if decision == engine.Deny {
 					log.Printf("BLOCKED: channel=%s tool=%s reason=%s", params.Channel, params.Tool, reason)
 					p.logDecision(rpc.Method, "channel:"+params.Channel+"/"+params.Tool, "deny", reason)
@@ -777,7 +810,7 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 		// Full evaluator pipeline (denylist, allowlist, arg filters, vuln scan, injection scan)
 		evalStart := time.Now()
 		evalCtx, evalCancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
-		decision, reason, details := p.evaluator.EvaluateWithDetails(evalCtx, message)
+		decision, reason, details := p.getEvaluator().EvaluateWithDetails(evalCtx, message)
 		evalCancel()
 
 		method := rpc.Method
@@ -808,7 +841,7 @@ func (p *httpProxy) proxyClientToUpstream(ctx context.Context, client, upstream 
 		// If the canary leaks back in a response, the injection scanner's
 		// Tier 3 check detects cross-tool data exfiltration.
 		outData := data
-		if injector := p.evaluator.InjectionDetector(); injector != nil {
+		if injector := p.getEvaluator().InjectionDetector(); injector != nil {
 			if canary := injector.GetCanaryToken(); canary != "" {
 				if injected, err := injectCanaryToken(data, canary); err == nil {
 					outData = injected
@@ -847,7 +880,7 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 					ArgumentsHash: fmt.Sprintf("binary_response_size=%d", len(data)),
 					Decision:      "deny",
 					Reason:        "binary WebSocket frames are not permitted",
-					PolicyVersion: "1.0",
+					PolicyVersion: p.getPolicyVersion(),
 				}
 				_ = p.auditWriter.Write(&auditDec)
 			}
@@ -871,10 +904,10 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 		var respResult engine.ResponseResult
 		hasRespResult := false
 
-		if p.evaluator.InjectionDetector() != nil || p.evaluator.MalwareScanner() != nil || p.evaluator.SecretsScanner() != nil || p.evaluator.PIIScanner() != nil {
+		if p.getEvaluator().InjectionDetector() != nil || p.getEvaluator().MalwareScanner() != nil || p.getEvaluator().SecretsScanner() != nil || p.getEvaluator().PIIScanner() != nil {
 			p.metrics.RecordResponseScanned()
 			evalCtx, evalCancel := context.WithTimeout(ctx, time.Duration(p.timeoutMs)*time.Millisecond)
-			respResult = p.evaluator.EvaluateResponse(evalCtx, respMethod, message)
+			respResult = p.getEvaluator().EvaluateResponse(evalCtx, respMethod, message)
 			hasRespResult = true
 			evalCancel()
 			respDecision = respResult.Decision
@@ -912,7 +945,7 @@ func (p *httpProxy) proxyUpstreamToClient(ctx context.Context, upstream, client 
 				ArgumentsHash: fmt.Sprintf("ws_response_size=%d", len(data)),
 				Decision:      respDecision,
 				Reason:        respReason,
-				PolicyVersion: "1.0",
+				PolicyVersion: p.getPolicyVersion(),
 				ScannerType:   scannerType,
 			}
 			if hasRespResult {
@@ -1051,7 +1084,7 @@ func (p *httpProxy) logDecision(method, params, decision, reason string) {
 		ArgumentsHash: argsHash,
 		Decision:      decision,
 		Reason:        reason,
-		PolicyVersion: "1.0",
+		PolicyVersion: p.getPolicyVersion(),
 		ScannerType:   scanType,
 	}
 	if err := p.auditWriter.Write(&auditDec); err != nil {
@@ -1125,7 +1158,7 @@ func (p *httpProxy) logBridgeDecision(method, params, decision, reason, correlat
 		ArgumentsHash:  argsHash,
 		Decision:       decision,
 		Reason:         reason,
-		PolicyVersion:  "1.0",
+		PolicyVersion: p.getPolicyVersion(),
 		ScannerType:    scanType,
 		CorrelationID:  correlationID,
 		Classification: classification,
@@ -1161,7 +1194,7 @@ func (p *httpProxy) logDecisionWithDetails(method, params, decision, reason stri
 		ArgumentsHash: argsHash,
 		Decision:      decision,
 		Reason:        reason,
-		PolicyVersion: "1.0",
+		PolicyVersion: p.getPolicyVersion(),
 		ScannerType:   scanType,
 		Details:       details,
 	}
@@ -1194,7 +1227,7 @@ func (p *httpProxy) logBridgeDecisionWithDetails(method, params, decision, reaso
 		ArgumentsHash:  argsHash,
 		Decision:       decision,
 		Reason:         reason,
-		PolicyVersion:  "1.0",
+		PolicyVersion: p.getPolicyVersion(),
 		ScannerType:    scanType,
 		CorrelationID:  correlationID,
 		Classification: classification,
