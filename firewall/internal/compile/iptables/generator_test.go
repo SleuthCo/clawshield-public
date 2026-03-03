@@ -539,3 +539,184 @@ func TestGenerate_IPv6Addresses(t *testing.T) {
 		t.Error("expected some rules")
 	}
 }
+
+// TestValidateIPTablesArg_RejectsShellMetacharacters tests that the validation function
+// rejects arguments containing dangerous shell metacharacters.
+func TestValidateIPTablesArg_RejectsShellMetacharacters(t *testing.T) {
+	tests := []struct {
+		name    string
+		arg     string
+		wantErr bool
+	}{
+		{
+			name:    "valid_ipv4",
+			arg:     "192.168.1.1",
+			wantErr: false,
+		},
+		{
+			name:    "valid_ipv6",
+			arg:     "2001:db8::1",
+			wantErr: false,
+		},
+		{
+			name:    "shell_injection_semicolon",
+			arg:     "192.168.1.1; rm -rf /",
+			wantErr: true,
+		},
+		{
+			name:    "shell_injection_pipe",
+			arg:     "192.168.1.1 | cat",
+			wantErr: true,
+		},
+		{
+			name:    "shell_injection_ampersand",
+			arg:     "192.168.1.1 & echo",
+			wantErr: true,
+		},
+		{
+			name:    "shell_injection_backtick",
+			arg:     "192.168.1.1`whoami`",
+			wantErr: true,
+		},
+		{
+			name:    "shell_injection_subshell",
+			arg:     "192.168.1.1 $(cat /etc/passwd)",
+			wantErr: true,
+		},
+		{
+			name:    "shell_injection_newline",
+			arg:     "192.168.1.1\nrm -rf /",
+			wantErr: true,
+		},
+		{
+			name:    "shell_injection_carriage_return",
+			arg:     "192.168.1.1\r\nmalicious",
+			wantErr: true,
+		},
+		{
+			name:    "shell_injection_redir_append",
+			arg:     "192.168.1.1 >> /tmp/file",
+			wantErr: true,
+		},
+		{
+			name:    "shell_injection_redir_input",
+			arg:     "192.168.1.1 << EOF",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateIPTablesArg(tt.arg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateIPTablesArg(%q) error = %v, wantErr %v", tt.arg, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestGenerate_RejectsShellMetacharsInAllowedIPs tests that shell metacharacters
+// in allowed_ips configuration are rejected.
+func TestGenerate_RejectsShellMetacharsInAllowedIPs(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{
+			name: "valid_ips",
+			cfg: Config{
+				AllowedIPs: []string{"192.168.1.1", "10.0.0.1"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "injection_in_ip",
+			cfg: Config{
+				AllowedIPs: []string{"192.168.1.1; rm -rf /"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "injection_with_backtick",
+			cfg: Config{
+				AllowedIPs: []string{"192.168.1.1`whoami`"},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Generate(tt.cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Generate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestGenerate_IPv6RulesGenerated tests that IPv6 addresses generate ip6tables rules.
+func TestGenerate_IPv6RulesGenerated(t *testing.T) {
+	cfg := Config{
+		AllowedIPs: []string{
+			"192.168.1.1",      // IPv4
+			"2001:db8::1",      // IPv6
+			"10.0.0.1",         // IPv4
+			"fe80::1",          // IPv6 link-local
+		},
+		DNSResolvers: []string{
+			"8.8.8.8",          // IPv4
+			"2001:4860:4860::8888", // IPv6 (Google DNS)
+		},
+	}
+
+	rules, err := Generate(cfg)
+	if err != nil {
+		t.Fatalf("Generate() failed: %v", err)
+	}
+
+	// Verify IPv4 rules are present for IPv4 addresses
+	hasIPv4Rule1 := false
+	hasIPv4Rule2 := false
+	for _, rule := range rules {
+		if strings.Contains(rule, "192.168.1.1") {
+			hasIPv4Rule1 = true
+		}
+		if strings.Contains(rule, "10.0.0.1") {
+			hasIPv4Rule2 = true
+		}
+	}
+
+	if !hasIPv4Rule1 {
+		t.Error("missing rule for IPv4 address 192.168.1.1")
+	}
+	if !hasIPv4Rule2 {
+		t.Error("missing rule for IPv4 address 10.0.0.1")
+	}
+
+	// IPv6 addresses should not appear in IPv4 rules output
+	hasIPv6InIPv4Rules := false
+	for _, rule := range rules {
+		if strings.Contains(rule, "2001:db8::1") || strings.Contains(rule, "fe80::1") {
+			hasIPv6InIPv4Rules = true
+		}
+	}
+
+	if hasIPv6InIPv4Rules {
+		t.Error("IPv6 addresses should not appear in IPv4 rules output")
+	}
+
+	// Verify DNS resolver rules are added
+	hasDNSv4 := false
+	for _, rule := range rules {
+		if strings.Contains(rule, "8.8.8.8") && strings.Contains(rule, "dport 53") {
+			hasDNSv4 = true
+			break
+		}
+	}
+
+	if !hasDNSv4 {
+		t.Error("missing DNS rule for IPv4 resolver 8.8.8.8")
+	}
+}

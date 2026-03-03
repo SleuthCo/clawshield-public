@@ -156,6 +156,10 @@ func (s *VulnScanner) compileSQLiPatterns() {
 		`(?i)\binformation_schema\b`,
 		// INTO OUTFILE / LOAD_FILE
 		`(?i)\b(into\s+outfile|load_file)\b`,
+		// MySQL conditional comments
+		`(?i)/\*!\d*.*\*/`,
+		// Comment-wrapped SQL keywords
+		`(?i)/\*.*\*/.*(?:select|union|insert|update|delete|drop)`,
 	}
 	s.sqliPatterns = compilePatterns(patterns)
 }
@@ -250,6 +254,19 @@ func (s *VulnScanner) checkSSRFDetail(params string) *types.ScanResult {
 			}
 		}
 
+		// IPv6 SSRF patterns (localhost and loopback variants)
+		if isIPv6SSRF(host) {
+			return &types.ScanResult{
+				Scanner:      "vuln",
+				RuleID:       "ssrf",
+				Description:  fmt.Sprintf("vuln_scan: SSRF detected — IPv6 localhost/loopback %s", host),
+				MatchExcerpt: types.TruncateExcerpt(host),
+				Confidence:   "high",
+				Blocked:      true,
+				Metadata:     make(map[string]string),
+			}
+		}
+
 		// Private IP check
 		ip := net.ParseIP(host)
 		if ip != nil {
@@ -315,8 +332,14 @@ func (s *VulnScanner) compilePathPatterns() {
 		`(?i)(%2e%2e|%2e%2e%2f|%2e%2e/|\.\.%2f|%2e%2e%5c|\.\.%5c)`,
 		// Double URL-encoding
 		`(?i)(%252e%252e|%252e%252e%252f)`,
+		// Mixed encoding variants
+		`(?i)(%252e%2e|%2e%252e)`,
+		// Double-encoded dot variants
+		`(?i)(%%32%65)`,
 		// Null byte injection (path truncation)
 		`%00`,
+		// Null byte with dot
+		`\.%00`,
 		// Windows UNC paths
 		`(?i)^\\\\[a-z0-9]`,
 	}
@@ -501,4 +524,22 @@ func decodeHexBytes(s string) ([]byte, error) {
 	cleaned := strings.ReplaceAll(s, " ", "")
 	cleaned = strings.ReplaceAll(cleaned, "\\x", "")
 	return hex.DecodeString(cleaned)
+}
+
+// isIPv6SSRF checks if a host string matches IPv6 SSRF patterns.
+func isIPv6SSRF(host string) bool {
+	ipv6Patterns := []string{
+		"::1",                  // IPv6 loopback
+		"::ffff:127.0.0.1",     // IPv6-mapped IPv4 loopback
+		"0:0:0:0:0:0:0:1",      // Full IPv6 loopback
+		"::ffff:0:0",           // IPv6-mapped IPv4 any
+		"::ffff:7f00:1",        // IPv6-mapped IPv4 127.0.0.1 (hex)
+	}
+	lower := strings.ToLower(host)
+	for _, pattern := range ipv6Patterns {
+		if lower == pattern {
+			return true
+		}
+	}
+	return false
 }

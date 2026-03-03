@@ -282,6 +282,157 @@ func TestAdaptiveControllerThreatScore(t *testing.T) {
 	}
 }
 
+func TestAdaptiveControllerThreatScoreCap(t *testing.T) {
+	b := New()
+	defer b.Close()
+
+	ac := NewAdaptiveController(b, nil)
+	ac.Start()
+	defer ac.Stop()
+
+	// Send enough critical events to exceed MaxThreatScore
+	// Critical severity has weight 5, so 25 events = 125 which exceeds 100
+	for i := 0; i < 25; i++ {
+		b.Publish(&types.SecurityEvent{
+			EventType: types.EventPrivesc,
+			Source:    types.SourceEBPF,
+			Severity:  types.SeverityCritical, // Weight 5
+			Timestamp: time.Now(),
+		})
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	score := ac.ThreatScore()
+	if score > MaxThreatScore {
+		t.Errorf("threat score %d exceeds MaxThreatScore %d", score, MaxThreatScore)
+	}
+	if score < 50 {
+		t.Errorf("threat score %d unexpectedly low, expected near %d", score, MaxThreatScore)
+	}
+}
+
+func TestAdaptiveControllerNilCallbackSafety(t *testing.T) {
+	b := New()
+	defer b.Close()
+
+	rules := []types.AdaptiveRule{
+		{
+			Trigger: types.AdaptiveTrigger{
+				Source: types.SourceEBPF,
+				Type:   types.EventPrivesc,
+			},
+			Action: "elevate_sensitivity",
+			Params: map[string]int{"duration_seconds": 10},
+		},
+		{
+			Trigger: types.AdaptiveTrigger{
+				Source: types.SourceProxy,
+				Type:   types.EventInjectionBlocked,
+			},
+			Action: "restrict_domains",
+			Params: map[string]int{"duration_seconds": 10},
+		},
+	}
+
+	// Create controller WITHOUT setting any callbacks
+	ac := NewAdaptiveController(b, rules)
+	ac.Start()
+	defer ac.Stop()
+
+	// Trigger events that would invoke callbacks — should NOT panic
+	b.Publish(&types.SecurityEvent{
+		EventType: types.EventPrivesc,
+		Source:    types.SourceEBPF,
+		Severity:  types.SeverityCritical,
+		Timestamp: time.Now(),
+	})
+
+	b.Publish(&types.SecurityEvent{
+		EventType: types.EventInjectionBlocked,
+		Source:    types.SourceProxy,
+		Severity:  types.SeverityHigh,
+		Timestamp: time.Now(),
+	})
+
+	// If we get here without panicking, the test passes
+	time.Sleep(200 * time.Millisecond)
+}
+
+func TestAdaptiveControllerSourceTracking(t *testing.T) {
+	b := New()
+	defer b.Close()
+
+	ac := NewAdaptiveController(b, nil)
+	ac.Start()
+	defer ac.Stop()
+
+	// Publish events from two different sources
+	for i := 0; i < 3; i++ {
+		b.Publish(&types.SecurityEvent{
+			EventType: types.EventPrivesc,
+			Source:    types.SourceEBPF,
+			Severity:  types.SeverityHigh,
+			Timestamp: time.Now(),
+		})
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	for i := 0; i < 5; i++ {
+		b.Publish(&types.SecurityEvent{
+			EventType: types.EventInjectionBlocked,
+			Source:    types.SourceProxy,
+			Severity:  types.SeverityMedium,
+			Timestamp: time.Now(),
+		})
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	ebpfCount := ac.SourceEventCount(string(types.SourceEBPF), 1*time.Minute)
+	proxyCount := ac.SourceEventCount(string(types.SourceProxy), 1*time.Minute)
+
+	if ebpfCount != 3 {
+		t.Errorf("expected 3 eBPF events, got %d", ebpfCount)
+	}
+	if proxyCount != 5 {
+		t.Errorf("expected 5 proxy events, got %d", proxyCount)
+	}
+}
+
+func TestSourceTrackerCleanup(t *testing.T) {
+	st := newSourceTracker()
+
+	// Add old events
+	oldTime := time.Now().Add(-10 * time.Minute)
+	for i := 0; i < 5; i++ {
+		st.recordEvent("old-source", oldTime)
+	}
+
+	// Add recent events
+	recentTime := time.Now()
+	for i := 0; i < 3; i++ {
+		st.recordEvent("recent-source", recentTime)
+	}
+
+	// Cleanup with 5-minute max age
+	st.cleanup(5 * time.Minute)
+
+	// Old source should be removed
+	oldCount := st.countInWindow("old-source", 15*time.Minute)
+	if oldCount != 0 {
+		t.Errorf("expected 0 old events after cleanup, got %d", oldCount)
+	}
+
+	// Recent source should be kept
+	recentCount := st.countInWindow("recent-source", 15*time.Minute)
+	if recentCount != 3 {
+		t.Errorf("expected 3 recent events after cleanup, got %d", recentCount)
+	}
+}
+
 func TestAdaptiveControllerOverrideExpiry(t *testing.T) {
 	b := New()
 	defer b.Close()

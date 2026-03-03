@@ -26,6 +26,19 @@ const (
 	IntentUnknown        = "unknown"
 )
 
+// containsInjectionKeywords checks if method name contains suspicious injection-like patterns
+// that suggest the method name itself is crafted to bypass security controls.
+func containsInjectionKeywords(method string) bool {
+	lower := strings.ToLower(method)
+	suspicious := []string{"ignore", "override", "system", "prompt", "inject", "bypass"}
+	for _, s := range suspicious {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
+}
+
 // ClassifyIntent heuristically classifies a request's intent based on the
 // tool method name and parameter content. This is intentionally conservative —
 // it only classifies as code_generation when there are strong signals, to avoid
@@ -38,6 +51,11 @@ func ClassifyIntent(method, params string) *RequestContext {
 
 	lowerMethod := strings.ToLower(method)
 	lowerParams := strings.ToLower(params)
+
+	// Don't reduce sensitivity if method name looks crafted/injected
+	if containsInjectionKeywords(method) {
+		return ctx // Default to general (full scanning)
+	}
 
 	// Code generation signals from method name
 	codeMethodKeywords := []string{

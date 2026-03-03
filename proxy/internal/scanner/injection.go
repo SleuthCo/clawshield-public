@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unicode"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/SleuthCo/clawshield/shared/types"
 )
 
@@ -91,6 +93,8 @@ func (d *InjectionDetector) ScanRequestDetail(method string, params string) *typ
 		return nil
 	}
 
+	// Normalize Unicode to detect evasion via different representations
+	params = norm.NFKC.String(params)
 	lower := strings.ToLower(params)
 
 	// Tier 1: role override heuristics
@@ -198,6 +202,8 @@ func (d *InjectionDetector) ScanResponseDetail(method string, responseBody strin
 		return nil
 	}
 
+	// Normalize Unicode to detect evasion via different representations
+	responseBody = norm.NFKC.String(responseBody)
 	lower := strings.ToLower(responseBody)
 
 	// Tier 1: role override heuristics
@@ -334,6 +340,13 @@ func (d *InjectionDetector) compilePatterns() {
 		`(?i)new\s+role\s*:\s`,
 		`(?i)forget\s+(everything|all|your)\s+(you|instructions?|rules?)`,
 		`(?i)override\s+(your|system|all)\s+\w*\s*(instructions?|rules?|prompts?)`,
+		// Semantic injection variations
+		`(?i)act\s+as\s+(a|an|the)\s+`,
+		`(?i)behave\s+(like|as)\s+(a|an|the)?\s*`,
+		`(?i)pretend\s+(to\s+be|you'?re?)\s+`,
+		`(?i)roleplay\s+as\s+`,
+		`(?i)take\s+on\s+the\s+role\s+of`,
+		`(?i)from\s+now\s+on,?\s+you\s+(are|will|shall|must)`,
 	}
 	d.roleOverridePatterns = compilePatterns(rolePatterns)
 
@@ -356,15 +369,17 @@ func (d *InjectionDetector) compilePatterns() {
 		`[\x{200B}\x{200C}\x{200D}\x{FEFF}]`,
 		// Unicode tag characters (U+E0000-U+E007F)
 		`[\x{E0001}-\x{E007F}]`,
+		// Unicode whitespace that could evade keyword matching
+		`[\x{00A0}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]`,
 	}
 	d.encodingPatterns = compilePatterns(encPatterns)
 
 	// Delimiter injection patterns
 	delimPatterns := []string{
-		// Fake tool output boundaries
-		"(?i)```\\s*(tool_output|tool_result|function_result|assistant|system)",
+		// Fake tool output boundaries (3 or more backticks)
+		"(?i)`{3,}\\s*(tool_output|tool_result|function_result|assistant|system)",
 		// Fake JSON-RPC response framing
-		`(?i)\{"jsonrpc"\s*:\s*"2\.0"\s*,\s*"result"`,
+		`(?i)\{\"jsonrpc\"\s*:\s*\"2\\.0\"\s*,\s*\"result\"`,
 		// Fake end-of-response markers
 		`(?i)(END_TOOL_OUTPUT|END_FUNCTION_CALL|<\/tool_response>|<\/function_output>)`,
 		// M4: Rovo cross-action attack patterns — agent response tries to invoke other actions

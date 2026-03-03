@@ -232,7 +232,6 @@ func TestHTTPProxy_PlainHTTPForwarding(t *testing.T) {
 	p := &httpProxy{
 		metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
-		metrics:    metrics.New(),
 		evaluator:  eval,
 		sessionID:  "test-session",
 		timeoutMs:  100,
@@ -274,7 +273,6 @@ func TestHTTPProxy_AuthTokenInjection(t *testing.T) {
 	p := &httpProxy{
 		metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
-		metrics:    metrics.New(),
 		authToken:  "test-secret-token",
 		evaluator:  eval,
 		sessionID:  "test-session",
@@ -322,7 +320,6 @@ func TestHTTPProxy_WebSocketPolicyEnforcement(t *testing.T) {
 	p := &httpProxy{
 		metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
-		metrics:    metrics.New(),
 		evaluator:  eval,
 		sessionID:  "test-session",
 		timeoutMs:  100,
@@ -405,7 +402,6 @@ func TestHTTPProxy_WebSocketVulnScan(t *testing.T) {
 	p := &httpProxy{
 		metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
-		metrics:    metrics.New(),
 		evaluator:  eval,
 		sessionID:  "test-session",
 		timeoutMs:  200,
@@ -473,7 +469,6 @@ func TestHTTPProxy_AgentAllowlistEnforcement(t *testing.T) {
 	p := &httpProxy{
 		metrics:    metrics.New(),
 		gatewayURL: mustParseURL(upstream.URL),
-		metrics:    metrics.New(),
 		evaluator:  eval,
 		sessionID:  "test-session",
 		timeoutMs:  100,

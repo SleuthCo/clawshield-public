@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -18,8 +19,11 @@ import (
 )
 
 const (
-	batchSize     = 100
-	flushInterval = 5 * time.Second
+	batchSize          = 100
+	flushInterval      = 5 * time.Second
+	maxRetries         = 3
+	retryDelay         = 100 * time.Millisecond
+	checkpointInterval = 100 // Write external checkpoint every 100 entries
 )
 
 // auditEntry pairs a decision with an optional tool call so both can be
@@ -207,7 +211,7 @@ func (w *Writer) loop() {
 	}
 }
 
-// flushBatch writes the current batch to SQLite.
+// flushBatch writes the current batch to SQLite with retry logic.
 // Must be called only when mutex is held.
 // ArgumentsHash is expected to be pre-hashed by the caller - stored directly.
 // Tool call data (if present) is inserted in the same transaction as its decision.
@@ -220,6 +224,31 @@ func (w *Writer) flushBatch() error {
 	copy(batch, w.batch)
 	w.batch = w.batch[:0]
 
+	return w.flushWithRetry(batch)
+}
+
+// flushWithRetry attempts to flush entries to SQLite with exponential backoff retry logic.
+// If all retries fail, writes entries to a fallback JSONL file for later recovery.
+func (w *Writer) flushWithRetry(batch []auditEntry) error {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if err := w.flush(batch); err != nil {
+			lastErr = err
+			log.Printf("ERROR: audit write failed (attempt %d/%d): %v", attempt+1, maxRetries, err)
+			time.Sleep(retryDelay * time.Duration(attempt+1))
+			continue
+		}
+		// Success
+		return nil
+	}
+
+	// After all retries failed, write to a fallback file
+	w.writeFallback(batch)
+	return lastErr
+}
+
+// flush writes a batch of entries to SQLite in a single transaction.
+func (w *Writer) flush(batch []auditEntry) error {
 	tx, err := w.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -357,6 +386,19 @@ func (w *Writer) flushBatch() error {
 
 	w.flushed += int64(len(batch))
 
+	// SECURITY: Write external checkpoint every N entries to prevent tampering
+	// with both data and checksums stored in the same DB.
+	if w.dbPath != "" && w.flushed%checkpointInterval < int64(len(batch)) && w.flushed >= checkpointInterval {
+		lastHash, err := w.computeDBHash()
+		if err != nil {
+			log.Printf("ERROR: Failed to compute DB hash for checkpoint: %v", err)
+		} else {
+			if err := w.writeExternalCheckpoint(int(w.flushed), lastHash); err != nil {
+				log.Printf("ERROR: Failed to write external checkpoint: %v", err)
+			}
+		}
+	}
+
 	// SECURITY: Write integrity checkpoint every 1000 decisions (down from 10k)
 	// to reduce the tamper window. Each checkpoint stores a SHA-256 hash of the
 	// entire DB file, allowing detection of any modifications between checkpoints.
@@ -367,6 +409,39 @@ func (w *Writer) flushBatch() error {
 	}
 
 	return nil
+}
+
+// writeFallback writes failed entries to a local JSONL file for later recovery.
+func (w *Writer) writeFallback(batch []auditEntry) {
+	f, err := os.OpenFile("audit_fallback.jsonl", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		log.Printf("CRITICAL: cannot write audit fallback: %v", err)
+		return
+	}
+	defer f.Close()
+
+	for _, entry := range batch {
+		if entry.decision != nil {
+			data, err := json.Marshal(entry.decision)
+			if err != nil {
+				log.Printf("ERROR: failed to marshal decision for fallback: %v", err)
+				continue
+			}
+			if _, err := f.Write(append(data, '\n')); err != nil {
+				log.Printf("ERROR: failed to write fallback entry: %v", err)
+			}
+		}
+	}
+
+	log.Printf("WARNING: %d audit entries written to fallback file", len(batch))
+}
+
+// writeExternalCheckpoint writes checkpoint data to an external file outside the DB.
+// This allows integrity detection even if the DB file is tampered with.
+func (w *Writer) writeExternalCheckpoint(entryCount int, lastHash string) error {
+	checkpointFile := w.dbPath + ".checkpoint"
+	data := fmt.Sprintf("%d:%s:%s\n", entryCount, time.Now().UTC().Format(time.RFC3339), lastHash)
+	return os.WriteFile(checkpointFile, []byte(data), 0600)
 }
 
 func (w *Writer) writeIntegrityCheckpoint(reason string) error {

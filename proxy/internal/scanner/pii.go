@@ -282,10 +282,17 @@ func (s *PIIScanner) compileRules(enabled map[PIICategory]bool) {
 			confidence:  confidenceMedium,
 		},
 		{
-			name:        "International Phone Number",
+			name:        "International Phone Number (E.164)",
 			category:    PIICategoryPhone,
 			pattern:     `\+[1-9]\d{6,14}`,
-			description: "international phone number (E.164)",
+			description: "international phone number (E.164 format)",
+			confidence:  confidenceMedium,
+		},
+		{
+			name:        "International Phone with Context",
+			category:    PIICategoryPhone,
+			pattern:     `(?i)(?:phone|tel|mobile|cell|fax)\s*[:=]?\s*\+?\d[\d\s\-\.\(\)]{7,18}\d`,
+			description: "international phone number with keyword context",
 			confidence:  confidenceMedium,
 		},
 
@@ -357,6 +364,13 @@ func (s *PIIScanner) compileRules(enabled map[PIICategory]bool) {
 			category:    PIICategoryPassport,
 			pattern:     `(?i)(?:passport|travel\s*doc(?:ument)?)\s*(?:no|number|#|num)?\s*[:=]?\s*[A-Z]?\d{8,9}\b`,
 			description: "US passport number",
+			confidence:  confidenceMedium,
+		},
+		{
+			name:        "International Passport Number",
+			category:    PIICategoryPassport,
+			pattern:     `(?i)(?:passport|travel\s*doc(?:ument)?)\s*(?:no|number|#|num)?\s*[:=]?\s*[A-Z]{1,2}\d{6,9}`,
+			description: "international passport number",
 			confidence:  confidenceMedium,
 		},
 

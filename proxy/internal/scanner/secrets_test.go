@@ -438,6 +438,42 @@ func TestSecretsScanner_MultipleFindingsInSameText(t *testing.T) {
 	}
 }
 
+func TestSecretsScanner_MultiLineKey(t *testing.T) {
+	s := NewSecretsScanner(&SecretsConfig{
+		Enabled:      true,
+		ScanRequests: true,
+	})
+
+	// Test that a key split across lines with backslash continuation is detected
+	input := `AWS_SECRET_ACCESS_KEY=` + "\\\n" + `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`
+	blocked, reason := s.ScanRequest("chat.send", input)
+	if !blocked {
+		t.Errorf("expected multi-line secret to be detected (reason: %s)", reason)
+	}
+}
+
+func TestSecretsScanner_ShortTokenWithPrefix(t *testing.T) {
+	s := NewSecretsScanner(&SecretsConfig{
+		Enabled:      true,
+		ScanRequests: true,
+		Rules:        []string{"generic_api"},
+	})
+
+	// Test that a 24+ char token with api_key prefix is detected
+	input := `api_key=AbCdEfGhIjKlMnOpQrStUvWx`
+	blocked, reason := s.ScanRequest("chat.send", input)
+	if !blocked {
+		t.Errorf("expected short token with prefix to be detected (reason: %s)", reason)
+	}
+
+	// Test with token prefix
+	input2 := `token:SecretTokenValueWith24CharsOrMore`
+	blocked2, reason2 := s.ScanRequest("chat.send", input2)
+	if !blocked2 {
+		t.Errorf("expected token with prefix to be detected (reason: %s)", reason2)
+	}
+}
+
 // helper
 func containsStr(s, substr string) bool {
 	return len(s) >= len(substr) && strings.Contains(s, substr)

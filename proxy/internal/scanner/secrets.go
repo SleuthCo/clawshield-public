@@ -183,17 +183,24 @@ func (s *SecretsScanner) RuleCount() int {
 }
 
 func (s *SecretsScanner) scanDetail(text string) *types.ScanResult {
-	for _, rule := range s.rules {
-		if rule.pattern.MatchString(text) {
-			ruleID := toSnakeCase(rule.name)
-			return &types.ScanResult{
-				Scanner:      "secrets",
-				RuleID:       ruleID,
-				Description:  fmt.Sprintf("secrets_scan: %s detected (%s)", rule.name, rule.description),
-				MatchExcerpt: types.RedactExcerpt(rule.name),
-				Confidence:   "high",
-				Blocked:      true,
-				Metadata:     make(map[string]string),
+	// Normalize multi-line secrets: collapse line continuations
+	normalized := strings.ReplaceAll(text, "\\\n", "")
+	normalized = strings.ReplaceAll(normalized, "\\\r\n", "")
+	
+	// Scan both the original and normalized versions
+	for _, scanText := range []string{text, normalized} {
+		for _, rule := range s.rules {
+			if rule.pattern.MatchString(scanText) {
+				ruleID := toSnakeCase(rule.name)
+				return &types.ScanResult{
+					Scanner:      "secrets",
+					RuleID:       ruleID,
+					Description:  fmt.Sprintf("secrets_scan: %s detected (%s)", rule.name, rule.description),
+					MatchExcerpt: types.RedactExcerpt(rule.name),
+					Confidence:   "high",
+					Blocked:      true,
+					Metadata:     make(map[string]string),
+				}
 			}
 		}
 	}
@@ -437,6 +444,12 @@ func (s *SecretsScanner) compileBuiltinRules(enabled map[SecretRuleCategory]bool
 		},
 
 		// --- Generic API Keys ---
+		{
+			name:        "Generic API Key with Prefix",
+			category:    RuleCategoryGenericAPI,
+			pattern:     `(?i)(?:api[_-]?key|secret|token|password|auth|credential)\s*[:=]\s*["']?[A-Za-z0-9+/]{24,}[=]{0,2}`,
+			description: "API key/token/password with prefix (24+ chars)",
+		},
 		{
 			name:        "Generic Secret Assignment",
 			category:    RuleCategoryGenericAPI,
