@@ -44,7 +44,11 @@ func main() {
 		log.Fatalf("failed to initialize update schema: %v", err)
 	}
 
-	hub := api.NewHub(s)
+	apiKey := os.Getenv("CLAWSHIELD_HUB_API_KEY")
+	if apiKey == "" {
+		log.Println("WARNING: CLAWSHIELD_HUB_API_KEY not set — management API endpoints will reject all requests")
+	}
+	hub := api.NewHub(s, apiKey)
 	mux := http.NewServeMux()
 	hub.RegisterRoutes(mux)
 	hub.RegisterPolicyRoutes(mux)

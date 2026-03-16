@@ -17,7 +17,7 @@ func setupTestHub(t *testing.T) *Hub {
 	if err != nil {
 		t.Fatalf("failed to create test store: %v", err)
 	}
-	return NewHub(s)
+	return NewHub(s, "test-api-key")
 }
 
 // TestHandleHealth verifies the health endpoint returns 200 with status ok.

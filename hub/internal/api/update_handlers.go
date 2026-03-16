@@ -13,11 +13,11 @@ import (
 
 // RegisterUpdateRoutes registers all update-related routes with the mux.
 func (h *Hub) RegisterUpdateRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/releases", h.HandleCreateRelease)
-	mux.HandleFunc("GET /api/v1/releases", h.HandleListReleases)
-	mux.HandleFunc("POST /api/v1/rollouts", h.HandleCreateRollout)
-	mux.HandleFunc("GET /api/v1/rollouts/", h.HandleGetRollout)
-	mux.HandleFunc("POST /api/v1/rollouts/", h.HandlePauseRollout)
+	mux.HandleFunc("POST /api/v1/releases", h.requireAPIKey(h.HandleCreateRelease))
+	mux.HandleFunc("GET /api/v1/releases", h.requireAPIKey(h.HandleListReleases))
+	mux.HandleFunc("POST /api/v1/rollouts", h.requireAPIKey(h.HandleCreateRollout))
+	mux.HandleFunc("GET /api/v1/rollouts/", h.requireAPIKey(h.HandleGetRollout))
+	mux.HandleFunc("POST /api/v1/rollouts/", h.requireAPIKey(h.HandlePauseRollout))
 }
 
 // HandleCreateRelease creates a new update release.

@@ -13,15 +13,15 @@ import (
 
 // RegisterPolicyRoutes registers all policy-related HTTP routes with the mux.
 func (h *Hub) RegisterPolicyRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/policy-groups", h.HandleCreatePolicyGroup)
-	mux.HandleFunc("GET /api/v1/policy-groups", h.HandleListPolicyGroups)
-	mux.HandleFunc("GET /api/v1/policy-groups/", h.HandleGetPolicyGroup)
-	mux.HandleFunc("POST /api/v1/policy-versions", h.HandleCreatePolicyVersion)
-	mux.HandleFunc("GET /api/v1/policy-versions/", h.HandleGetPolicyVersion)
-	mux.HandleFunc("POST /api/v1/policy-versions/{id}/approve", h.HandleApprovePolicyVersion)
-	mux.HandleFunc("POST /api/v1/policy-versions/{id}/publish", h.HandlePublishPolicyVersion)
-	mux.HandleFunc("GET /api/v1/policy-versions/{id}/content", h.HandleGetPolicyContent)
-	mux.HandleFunc("POST /api/v1/agents/{id}/assign-group", h.HandleAssignAgentToGroup)
+	mux.HandleFunc("POST /api/v1/policy-groups", h.requireAPIKey(h.HandleCreatePolicyGroup))
+	mux.HandleFunc("GET /api/v1/policy-groups", h.requireAPIKey(h.HandleListPolicyGroups))
+	mux.HandleFunc("GET /api/v1/policy-groups/", h.requireAPIKey(h.HandleGetPolicyGroup))
+	mux.HandleFunc("POST /api/v1/policy-versions", h.requireAPIKey(h.HandleCreatePolicyVersion))
+	mux.HandleFunc("GET /api/v1/policy-versions/", h.requireAPIKey(h.HandleGetPolicyVersion))
+	mux.HandleFunc("POST /api/v1/policy-versions/{id}/approve", h.requireAPIKey(h.HandleApprovePolicyVersion))
+	mux.HandleFunc("POST /api/v1/policy-versions/{id}/publish", h.requireAPIKey(h.HandlePublishPolicyVersion))
+	mux.HandleFunc("GET /api/v1/policy-versions/{id}/content", h.requireAPIKey(h.HandleGetPolicyContent))
+	mux.HandleFunc("POST /api/v1/agents/{id}/assign-group", h.requireAPIKey(h.HandleAssignAgentToGroup))
 }
 
 // HandleCreatePolicyGroup handles POST /api/v1/policy-groups

@@ -13,10 +13,10 @@ import (
 
 // RegisterKeyRoutes registers all encryption key management routes.
 func (h *Hub) RegisterKeyRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/keys", h.HandleCreateKey)
-	mux.HandleFunc("GET /api/v1/keys", h.HandleListKeys)
-	mux.HandleFunc("GET /api/v1/keys/", h.HandleGetKey)
-	mux.HandleFunc("POST /api/v1/keys/", h.HandleRotateKeyOrRevoke)
+	mux.HandleFunc("POST /api/v1/keys", h.requireAPIKey(h.HandleCreateKey))
+	mux.HandleFunc("GET /api/v1/keys", h.requireAPIKey(h.HandleListKeys))
+	mux.HandleFunc("GET /api/v1/keys/", h.requireAPIKey(h.HandleGetKey))
+	mux.HandleFunc("POST /api/v1/keys/", h.requireAPIKey(h.HandleRotateKeyOrRevoke))
 }
 
 // HandleCreateKey creates a new encryption key.

@@ -160,31 +160,21 @@ func (s *Store) CreateEnrollmentToken(token string) error {
 	return err
 }
 
-// ValidateEnrollmentToken checks if a token is valid (exists and unused)
-// and marks it as used. Returns (true, nil) if valid, (false, nil) if
-// invalid or already used, or (false, err) on database error.
-func (s *Store) ValidateEnrollmentToken(token string) (bool, error) {
-	var used int
-	err := s.db.QueryRow(
-		"SELECT used FROM enrollment_tokens WHERE token = ?", token,
-	).Scan(&used)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
+// ValidateEnrollmentToken atomically checks if a token is valid (exists and unused)
+// and marks it as used by the given agent. Returns (true, nil) if valid,
+// (false, nil) if invalid or already used, or (false, err) on database error.
+func (s *Store) ValidateEnrollmentToken(token, usedBy string) (bool, error) {
+	result, err := s.db.Exec(
+		"UPDATE enrollment_tokens SET used = 1, used_at = CURRENT_TIMESTAMP, used_by = ? WHERE token = ? AND used = 0",
+		usedBy, token)
 	if err != nil {
 		return false, err
 	}
-	if used != 0 {
-		return false, nil
-	}
-
-	_, err = s.db.Exec(
-		"UPDATE enrollment_tokens SET used = 1, used_at = CURRENT_TIMESTAMP WHERE token = ?",
-		token)
+	rows, err := result.RowsAffected()
 	if err != nil {
 		return false, err
 	}
-	return true, nil
+	return rows == 1, nil
 }
 
 // RegisterAgent registers a new agent with the given ID, hostname, and tags.

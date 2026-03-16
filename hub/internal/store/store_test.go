@@ -43,7 +43,7 @@ func TestEnrollmentTokenLifecycle(t *testing.T) {
 	}
 
 	// Validate — should succeed
-	valid, err := s.ValidateEnrollmentToken(token)
+	valid, err := s.ValidateEnrollmentToken(token, "test-agent")
 	if err != nil {
 		t.Fatalf("validate token: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestEnrollmentTokenLifecycle(t *testing.T) {
 	}
 
 	// Validate again — should fail (already used)
-	valid, err = s.ValidateEnrollmentToken(token)
+	valid, err = s.ValidateEnrollmentToken(token, "test-agent")
 	if err != nil {
 		t.Fatalf("validate used token: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestEnrollmentTokenLifecycle(t *testing.T) {
 	}
 
 	// Validate non-existent token
-	valid, err = s.ValidateEnrollmentToken("nonexistent")
+	valid, err = s.ValidateEnrollmentToken("nonexistent", "test-agent")
 	if err != nil {
 		t.Fatalf("validate nonexistent: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestListEnrollmentTokens(t *testing.T) {
 	}
 
 	// Use one token
-	if _, err := s.ValidateEnrollmentToken(token2); err != nil {
+	if _, err := s.ValidateEnrollmentToken(token2, "test-agent"); err != nil {
 		t.Fatalf("validate token2: %v", err)
 	}
 

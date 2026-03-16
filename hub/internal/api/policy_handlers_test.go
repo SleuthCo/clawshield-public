@@ -3,12 +3,20 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/SleuthCo/clawshield/hub/internal/models"
 )
+
+// authedRequest creates an httptest.Request with the test API key auth header.
+func authedRequest(method, target string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, target, body)
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	return req
+}
 
 func TestPolicyGroupCRUD_API(t *testing.T) {
 	h := setupTestHub(t)
@@ -27,7 +35,7 @@ func TestPolicyGroupCRUD_API(t *testing.T) {
 		Description: "Production policy group",
 	}
 	body, _ := json.Marshal(createReq)
-	req := httptest.NewRequest("POST", "/api/v1/policy-groups", bytes.NewReader(body))
+	req := authedRequest("POST", "/api/v1/policy-groups", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -44,7 +52,7 @@ func TestPolicyGroupCRUD_API(t *testing.T) {
 	}
 
 	// Test: List policy groups
-	req = httptest.NewRequest("GET", "/api/v1/policy-groups", nil)
+	req = authedRequest("GET", "/api/v1/policy-groups", nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -60,7 +68,7 @@ func TestPolicyGroupCRUD_API(t *testing.T) {
 	}
 
 	// Test: Get policy group by ID
-	req = httptest.NewRequest("GET", "/api/v1/policy-groups/"+groupID, nil)
+	req = authedRequest("GET", "/api/v1/policy-groups/"+groupID, nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -76,7 +84,7 @@ func TestPolicyGroupCRUD_API(t *testing.T) {
 	}
 
 	// Test: Get non-existent group
-	req = httptest.NewRequest("GET", "/api/v1/policy-groups/nonexistent", nil)
+	req = authedRequest("GET", "/api/v1/policy-groups/nonexistent", nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -113,7 +121,7 @@ func TestPolicyVersionLifecycle_API(t *testing.T) {
 		CreatedBy:    "admin",
 	}
 	body, _ := json.Marshal(versionReq)
-	req := httptest.NewRequest("POST", "/api/v1/policy-versions", bytes.NewReader(body))
+	req := authedRequest("POST", "/api/v1/policy-versions", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -130,7 +138,7 @@ func TestPolicyVersionLifecycle_API(t *testing.T) {
 	}
 
 	// Test: Get policy version
-	req = httptest.NewRequest("GET", "/api/v1/policy-versions/"+versionID, nil)
+	req = authedRequest("GET", "/api/v1/policy-versions/"+versionID, nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -149,7 +157,7 @@ func TestPolicyVersionLifecycle_API(t *testing.T) {
 		Comment:    "Looks good",
 	}
 	body, _ = json.Marshal(approveReq)
-	req = httptest.NewRequest("POST", "/api/v1/policy-versions/"+versionID+"/approve", bytes.NewReader(body))
+	req = authedRequest("POST", "/api/v1/policy-versions/"+versionID+"/approve", bytes.NewReader(body))
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -164,7 +172,7 @@ func TestPolicyVersionLifecycle_API(t *testing.T) {
 	}
 
 	// Test: Publish policy version
-	req = httptest.NewRequest("POST", "/api/v1/policy-versions/"+versionID+"/publish", nil)
+	req = authedRequest("POST", "/api/v1/policy-versions/"+versionID+"/publish", nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -180,7 +188,7 @@ func TestPolicyVersionLifecycle_API(t *testing.T) {
 	}
 
 	// Test: Get policy content
-	req = httptest.NewRequest("GET", "/api/v1/policy-versions/"+versionID+"/content", nil)
+	req = authedRequest("GET", "/api/v1/policy-versions/"+versionID+"/content", nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -240,7 +248,7 @@ func TestAssignAgentToGroup_API(t *testing.T) {
 		GroupID: "test-group",
 	}
 	body, _ = json.Marshal(assignReq)
-	req = httptest.NewRequest("POST", "/api/v1/agents/"+agentID+"/assign-group", bytes.NewReader(body))
+	req = authedRequest("POST", "/api/v1/agents/"+agentID+"/assign-group", bytes.NewReader(body))
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 

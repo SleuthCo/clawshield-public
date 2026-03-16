@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -13,22 +14,52 @@ import (
 )
 
 type Hub struct {
-	Store *store.Store
+	Store  *store.Store
+	APIKey string // Required API key for all management endpoints
 }
 
-func NewHub(s *store.Store) *Hub {
-	return &Hub{Store: s}
+func NewHub(s *store.Store, apiKey string) *Hub {
+	return &Hub{Store: s, APIKey: apiKey}
+}
+
+// requireAPIKey is middleware that checks for a valid Bearer token.
+func (h *Hub) requireAPIKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.APIKey == "" {
+			log.Printf("WARNING: Hub API key not configured — rejecting request to %s", r.URL.Path)
+			writeError(w, http.StatusServiceUnavailable, "hub API key not configured")
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
+			return
+		}
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(token), []byte(h.APIKey)) != 1 {
+			writeError(w, http.StatusUnauthorized, "invalid API key")
+			return
+		}
+		next(w, r)
+	}
 }
 
 // RegisterRoutes registers all HTTP routes with the mux.
+// All management endpoints require API key auth. Health check is unauthenticated.
+// Enroll and checkin use their own auth (enrollment token / agent ID).
 func (h *Hub) RegisterRoutes(mux *http.ServeMux) {
+	// Unauthenticated
+	mux.HandleFunc("GET /api/v1/health", h.HandleHealth)
+
+	// Agent-authenticated (token or agent ID)
 	mux.HandleFunc("POST /api/v1/enroll", h.HandleEnroll)
 	mux.HandleFunc("POST /api/v1/checkin", h.HandleCheckin)
-	mux.HandleFunc("GET /api/v1/agents", h.HandleListAgents)
-	mux.HandleFunc("GET /api/v1/agents/", h.HandleGetAgent)
-	mux.HandleFunc("GET /api/v1/health", h.HandleHealth)
-	mux.HandleFunc("GET /api/v1/tokens", h.HandleListTokens)
-	mux.HandleFunc("POST /api/v1/tokens", h.HandleCreateToken)
+
+	// Management endpoints — require API key
+	mux.HandleFunc("GET /api/v1/agents", h.requireAPIKey(h.HandleListAgents))
+	mux.HandleFunc("GET /api/v1/agents/", h.requireAPIKey(h.HandleGetAgent))
+	mux.HandleFunc("GET /api/v1/tokens", h.requireAPIKey(h.HandleListTokens))
+	mux.HandleFunc("POST /api/v1/tokens", h.requireAPIKey(h.HandleCreateToken))
 }
 
 // HandleListTokens handles GET /api/v1/tokens
@@ -69,8 +100,11 @@ func (h *Hub) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate enrollment token
-	valid, err := h.Store.ValidateEnrollmentToken(req.Token)
+	// Generate agent ID
+	agentID := uuid.New().String()
+
+	// Validate and atomically consume enrollment token
+	valid, err := h.Store.ValidateEnrollmentToken(req.Token, agentID)
 	if err != nil {
 		log.Printf("error validating token: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
@@ -81,9 +115,6 @@ func (h *Hub) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid or already used token")
 		return
 	}
-
-	// Generate agent ID
-	agentID := uuid.New().String()
 
 	// Register agent
 	if err := h.Store.RegisterAgent(agentID, req.Hostname, req.Tags); err != nil {

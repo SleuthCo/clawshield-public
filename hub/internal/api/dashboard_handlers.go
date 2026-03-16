@@ -9,8 +9,8 @@ import (
 
 // RegisterDashboardRoutes registers all dashboard-related routes.
 func (h *Hub) RegisterDashboardRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/dashboard/overview", h.HandleDashboardOverview)
-	mux.HandleFunc("GET /api/v1/dashboard/security", h.HandleSecuritySummary)
+	mux.HandleFunc("GET /api/v1/dashboard/overview", h.requireAPIKey(h.HandleDashboardOverview))
+	mux.HandleFunc("GET /api/v1/dashboard/security", h.requireAPIKey(h.HandleSecuritySummary))
 }
 
 // HandleDashboardOverview returns fleet-wide summary statistics.
