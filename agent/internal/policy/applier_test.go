@@ -3,6 +3,7 @@ package policy
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	sharedpolicy "github.com/SleuthCo/clawshield/shared/policy"
@@ -296,6 +297,9 @@ func TestApply_VeryLargePolicy(t *testing.T) {
 
 // TestCurrentHash_UnreadableFile tests CurrentHash with unreadable file (permissions issue).
 func TestCurrentHash_UnreadableFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping permission test on Windows (no Unix file permissions)")
+	}
 	tmpDir := t.TempDir()
 	policyFile := filepath.Join(tmpDir, "policy.yaml")
 

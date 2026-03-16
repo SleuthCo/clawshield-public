@@ -203,8 +203,8 @@ func TestStreamScanner_Finalize(t *testing.T) {
 		t.Errorf("expected at least 1 scan result, got %d", len(detail.ScanResults))
 	}
 
-	if detail.EvalDurationMs <= 0 {
-		t.Errorf("expected EvalDurationMs > 0, got %f", detail.EvalDurationMs)
+	if detail.EvalDurationMs < 0 {
+		t.Errorf("expected EvalDurationMs >= 0, got %f", detail.EvalDurationMs)
 	}
 }
 

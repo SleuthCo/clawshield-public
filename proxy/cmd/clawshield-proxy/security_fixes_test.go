@@ -129,9 +129,9 @@ metrics:    metrics.New(),
 	proxyServer := httptest.NewServer(http.HandlerFunc(p.handler))
 	defer proxyServer.Close()
 
-	// POST a JSON body containing a denied method
+	// POST a JSON body containing a denied method (use non-OpenAI path — OpenAI paths skip MCP evaluation)
 	body := `{"method":"shell.exec","params":{"cmd":"rm -rf /"}}`
-	req, _ := http.NewRequest("POST", proxyServer.URL+"/v1/chat/completions", strings.NewReader(body))
+	req, _ := http.NewRequest("POST", proxyServer.URL+"/api/v1/tools/invoke", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)

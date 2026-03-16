@@ -343,9 +343,15 @@ func (p *httpProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Run policy evaluation on JSON request bodies
+		// Run policy evaluation on JSON request bodies.
+		// Skip MCP policy evaluation for OpenAI-format endpoints (chat completions, completions, models)
+		// — these use {model, messages} format, not JSON-RPC {method, params}.
+		// Security scanners still run on responses via ModifyResponse.
 		ct := r.Header.Get("Content-Type")
-		if strings.Contains(ct, "application/json") && len(bodyBytes) > 0 {
+		isOpenAIPath := strings.HasPrefix(r.URL.Path, "/v1/chat/completions") ||
+			strings.HasPrefix(r.URL.Path, "/v1/completions") ||
+			strings.HasPrefix(r.URL.Path, "/v1/models")
+		if strings.Contains(ct, "application/json") && len(bodyBytes) > 0 && !isOpenAIPath {
 			evalCtx, evalCancel := context.WithTimeout(r.Context(), time.Duration(p.timeoutMs)*time.Millisecond)
 			decision, reason, details := p.getEvaluator().EvaluateWithDetails(evalCtx, string(bodyBytes))
 			evalCancel()

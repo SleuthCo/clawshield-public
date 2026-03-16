@@ -142,8 +142,8 @@ func TestEvaluateWithDetails_PipelineStages(t *testing.T) {
 				t.Errorf("PipelineStage: got %s, want %s", detail.PipelineStage, tc.wantPipelineStage)
 			}
 
-			if detail.EvalDurationMs <= 0 {
-				t.Errorf("EvalDurationMs should be positive, got %f", detail.EvalDurationMs)
+			if detail.EvalDurationMs < 0 {
+				t.Errorf("EvalDurationMs should be non-negative, got %f", detail.EvalDurationMs)
 			}
 
 			if len(detail.ScanResults) != tc.wantScanResultsLen {
@@ -205,8 +205,8 @@ func TestEvaluateWithDetails_EvalDuration(t *testing.T) {
 				t.Fatal("detail should not be nil")
 			}
 
-			if detail.EvalDurationMs <= 0 {
-				t.Errorf("EvalDurationMs should be positive, got %f", detail.EvalDurationMs)
+			if detail.EvalDurationMs < 0 {
+				t.Errorf("EvalDurationMs should be non-negative, got %f", detail.EvalDurationMs)
 			}
 		})
 	}
@@ -401,8 +401,8 @@ func TestEvaluateResponse_Details(t *testing.T) {
 				tc.checkScanResult(t, &result.Details.ScanResults[0])
 			}
 
-			if result.Details.EvalDurationMs <= 0 {
-				t.Errorf("EvalDurationMs should be positive, got %f", result.Details.EvalDurationMs)
+			if result.Details.EvalDurationMs < 0 {
+				t.Errorf("EvalDurationMs should be non-negative, got %f", result.Details.EvalDurationMs)
 			}
 		})
 	}

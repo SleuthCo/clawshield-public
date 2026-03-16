@@ -22,9 +22,10 @@ fi
 # Replace the placeholder token and weak default password with strong random values
 OPENCLAW_CONFIG="/home/clawshield/.openclaw/openclaw.json"
 
-# SECURITY: Generate a strong random password for the gateway auth
-# This prevents the hardcoded placeholder from being used in any deployment
-GATEWAY_AUTH_PASSWORD=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+# SECURITY: Use the same token for both password (HTTP Bearer) and token (WS connect).
+# OpenClaw uses 'password' for HTTP Bearer auth and 'token' for WS connect auth.
+# The proxy sends Bearer {token} for HTTP, so both must match.
+GATEWAY_AUTH_PASSWORD="$GATEWAY_AUTH_TOKEN"
 
 if [ -f "$OPENCLAW_CONFIG" ]; then
   # Use jq if available, fallback to sed

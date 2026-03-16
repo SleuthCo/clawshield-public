@@ -450,7 +450,8 @@ func initAudit(auditDBPath string) (*sqlite.Writer, *sql.DB) {
 		correlation_id TEXT,
 		classification TEXT,
 		source TEXT,
-		response_blocked INTEGER DEFAULT 0
+		response_blocked INTEGER DEFAULT 0,
+		decision_details TEXT
 	);
 	CREATE TABLE IF NOT EXISTS integrity_checkpoints (
 		checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -464,6 +465,9 @@ func initAudit(auditDBPath string) (*sqlite.Writer, *sql.DB) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		log.Fatalf("Failed to initialize audit schema: %v", err)
 	}
+
+	// Migrate existing databases: add decision_details column if missing
+	db.Exec("ALTER TABLE decisions ADD COLUMN decision_details TEXT")
 
 	// Add security_events table for cross-layer event audit trail
 	securityEventsSchema := `

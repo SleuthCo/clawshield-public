@@ -53,16 +53,17 @@ CREATE TABLE IF NOT EXISTS integrity_checkpoints (
 func setupTestDB(t *testing.T) *sql.DB {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
-	
+
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
-	
+	t.Cleanup(func() { db.Close() })
+
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatalf("failed to create schema: %v", err)
 	}
-	
+
 	return db
 }
 

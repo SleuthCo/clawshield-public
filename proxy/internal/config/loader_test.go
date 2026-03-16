@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -308,6 +309,9 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 func TestLoad_PermissionDenied(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("skipping permission test when running as root")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping permission test on Windows (no Unix file permissions)")
 	}
 	
 	tmpDir := t.TempDir()

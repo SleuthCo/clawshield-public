@@ -46,20 +46,24 @@ func (a *Applier) Apply(policyYAML, signature string) error {
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
-	defer tmpFile.Close()
 
 	tmpPath := tmpFile.Name()
 
 	// Write the policy YAML to the temp file
 	if _, err := tmpFile.WriteString(policyYAML); err != nil {
+		tmpFile.Close()
 		os.Remove(tmpPath)
 		return fmt.Errorf("write to temp file: %w", err)
 	}
 
 	if err := tmpFile.Sync(); err != nil {
+		tmpFile.Close()
 		os.Remove(tmpPath)
 		return fmt.Errorf("sync temp file: %w", err)
 	}
+
+	// Close before rename — Windows requires the file to be closed before renaming
+	tmpFile.Close()
 
 	// Atomically rename temp file to final location
 	if err := os.Rename(tmpPath, a.PolicyFilePath); err != nil {
