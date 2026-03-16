@@ -1,0 +1,13 @@
+/var/log/nginx-docker/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+    sharedscripts
+    postrotate
+        docker exec clawshield-nginx nginx -s reopen 2>/dev/null || true
+    endscript
+}

@@ -1,0 +1,89 @@
+# ClawShield eBPF Security Monitor — OCI/Cloud Production Config
+# Adjust allowlists for your specific deployment
+
+detectors:
+  process_execution: true
+  network_connections: true
+  file_access: true
+  privilege_escalation: true
+
+alerts:
+  telegram:
+    enabled: true
+    # Uses SENTINEL_BOT_TOKEN and TELEGRAM_CHAT_ID from environment
+  log_file: /var/log/clawshield/ebpf.log
+  console: true
+
+thresholds:
+  fork_bomb_threshold: 100    # Higher for Docker — container spawning is noisy
+  port_scan_threshold: 25
+  ssh_brute_force: 5
+
+allowlist:
+  processes:
+    # System
+    - /usr/lib/systemd/systemd
+    - /usr/bin/apt
+    - /usr/bin/dpkg
+    - /usr/bin/logrotate
+    - /usr/sbin/cron
+    - /usr/sbin/sshd
+    - /usr/bin/sudo
+    # Docker
+    - /usr/bin/dockerd
+    - /usr/bin/containerd
+    - /usr/bin/containerd-shim
+    - /usr/bin/runc
+    - /usr/bin/docker
+    - /usr/sbin/xtables-nft-multi
+    # Certbot / Let's Encrypt
+    - /usr/bin/certbot
+    # Health checks (containers run wget internally)
+    - /usr/bin/wget
+
+  network:
+    # Loopback
+    - "127.0.0.0/8:*"
+    # Docker bridge subnets (match your docker-compose.yml)
+    - "172.19.0.0/24:*"
+    - "172.20.0.0/24:*"
+    - "172.21.0.0/24:*"
+    - "172.22.0.0/24:*"
+    # Cloud metadata (OCI/AWS/GCP)
+    - "169.254.169.254:*"
+
+  users:
+    - root
+    - deploy
+
+suspicious:
+  commands:
+    - "curl.*|.*sh"
+    - "wget.*|.*sh"
+    - "nc -e"
+    - "bash -i"
+    - "/dev/tcp/"
+    - "base64 -d"
+    - "chmod.*777"
+    - "rm -rf /"
+    - "python.*-c.*import socket"
+    - "ncat.*-e"
+
+  files:
+    - /etc/shadow
+    - /etc/sudoers
+    - /etc/passwd
+    - /root/.ssh/authorized_keys
+    - /opt/clawshield/secrets
+    - /opt/clawshield/deploy/.env
+    - /proc/kcore
+
+  network:
+    # Known C2/backdoor ports
+    - 4444    # Metasploit default
+    - 5555    # Common backdoor
+    - 31337   # Leet
+    - 1337    # Alt leet
+    - 6666    # IRC backdoor
+    - 6667    # IRC
+    - 9001    # Tor default

@@ -14,7 +14,7 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - /opt/clawshield/certs:/etc/nginx/certs:ro
       - /var/lib/letsencrypt:/var/lib/letsencrypt:ro
-      - nginx-logs:/var/log/nginx
+      - /var/log/nginx-docker:/var/log/nginx
       # tmpfs for nginx runtime (pid, client_body_temp, etc.)
     tmpfs:
       - /var/cache/nginx:size=32m
@@ -358,7 +358,6 @@ networks:
         - subnet: 172.22.0.0/24
 
 volumes:
-  nginx-logs:
   clawshield-audit:
   openclaw-agents:
   openclaw-devices:

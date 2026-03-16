@@ -21,10 +21,15 @@ packages:
   - auditd
   - audispd-plugins
   - nftables
+  - iptables-persistent
   - unattended-upgrades
   - ca-certificates
   - curl
   - jq
+  - bpfcc-tools
+  - python3-bpfcc
+  - bpftrace
+  - sqlite3
 
 write_files:
   # SSH hardening
@@ -166,11 +171,13 @@ runcmd:
   - augenrules --load
 
   # Create application directories
-  - mkdir -p /opt/clawshield/{config,data,logs,certs,nginx/conf.d}
+  - mkdir -p /opt/clawshield/{config,data,logs,certs,nginx/conf.d,ebpf/cmd/clawshield-ebpf,logging/oci,logging/systemd}
   - mkdir -p /var/log/nginx-docker
+  - mkdir -p /var/log/clawshield/audit-exports
   - chown -R deploy:deploy /opt/clawshield
   - chown deploy:deploy /var/log/nginx-docker
   - chmod 750 /opt/clawshield
+  - chmod 750 /var/log/clawshield
   - chmod 700 /opt/clawshield/config
 
   # Disable ubuntu default user SSH if it exists

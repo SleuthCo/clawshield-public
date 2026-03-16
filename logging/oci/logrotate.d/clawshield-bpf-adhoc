@@ -1,0 +1,11 @@
+# Ad-hoc BPF tool logs (execsnoop, tcpconnect bpftrace)
+# These are replaced by the full eBPF monitor but kept for fallback
+/var/log/bpf-*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+}

@@ -22,13 +22,13 @@ scp_cmd() {
 echo "=== ClawShield Deployment to ${VM_IP} ==="
 
 # --- Step 1: Wait for cloud-init ---
-echo "[1/7] Waiting for cloud-init to complete..."
+echo "[1/8] Waiting for cloud-init to complete..."
 ssh_cmd "sudo cloud-init status --wait" || {
     echo "WARNING: cloud-init may not have completed cleanly"
 }
 
 # --- Step 2: Upload deployment files ---
-echo "[2/7] Uploading deployment files..."
+echo "[2/8] Uploading deployment files..."
 scp_cmd -r "$(dirname "$0")/" "${REMOTE_USER}@${VM_IP}:${REMOTE_DIR}/deploy/"
 
 # Upload ClawShield source for Docker build
@@ -47,7 +47,7 @@ ssh_cmd "mkdir -p ${REMOTE_DIR}/src && tar xzf /tmp/clawshield-src.tar.gz -C ${R
 rm -f /tmp/clawshield-src.tar.gz
 
 # --- Step 3: Generate secrets and configure ---
-echo "[3/7] Generating secrets and configuring..."
+echo "[3/8] Generating secrets and configuring..."
 GATEWAY_TOKEN=$(ssh_cmd "openssl rand -hex 24")
 
 ssh_cmd bash <<REMOTE_SCRIPT
@@ -76,7 +76,7 @@ chmod 750 ${REMOTE_DIR}
 REMOTE_SCRIPT
 
 # --- Step 4: TLS certificate ---
-echo "[4/7] Obtaining TLS certificate..."
+echo "[4/8] Obtaining TLS certificate..."
 ssh_cmd bash <<REMOTE_SCRIPT
 set -euo pipefail
 
@@ -128,7 +128,7 @@ sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/copy-certs.sh
 REMOTE_SCRIPT
 
 # --- Step 5: Build containers ---
-echo "[5/7] Building Docker containers..."
+echo "[5/8] Building Docker containers..."
 ssh_cmd bash <<REMOTE_SCRIPT
 set -euo pipefail
 cd ${REMOTE_DIR}/deploy
@@ -145,7 +145,7 @@ docker compose build --no-cache
 REMOTE_SCRIPT
 
 # --- Step 6: Start services ---
-echo "[6/7] Starting services..."
+echo "[6/8] Starting services..."
 ssh_cmd bash <<REMOTE_SCRIPT
 set -euo pipefail
 cd ${REMOTE_DIR}/deploy
@@ -169,8 +169,15 @@ done
 docker compose ps
 REMOTE_SCRIPT
 
-# --- Step 7: Smoke tests ---
-echo "[7/7] Running smoke tests..."
+# --- Step 7: Deploy logging infrastructure ---
+echo "[7/8] Deploying logging infrastructure..."
+
+# Source was already uploaded to ${REMOTE_DIR}/src in step 2
+# logging-setup.sh uses REPO_ROOT which is two dirs up from SCRIPT_DIR
+ssh_cmd "sudo bash ${REMOTE_DIR}/src/logging/oci/logging-setup.sh"
+
+# --- Step 8: Smoke tests ---
+echo "[8/8] Running smoke tests..."
 scp_cmd "$(dirname "$0")/smoke-test.sh" "${REMOTE_USER}@${VM_IP}:/tmp/smoke-test.sh"
 ssh_cmd "chmod +x /tmp/smoke-test.sh && /tmp/smoke-test.sh ${DOMAIN}"
 

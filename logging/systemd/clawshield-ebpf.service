@@ -1,0 +1,27 @@
+[Unit]
+Description=ClawShield eBPF Security Monitor
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/clawshield/ebpf/cmd/clawshield-ebpf
+EnvironmentFile=-/opt/clawshield/logging/systemd/clawshield-ebpf.env
+ExecStart=/usr/bin/python3 /opt/clawshield/ebpf/cmd/clawshield-ebpf/main.py -c /opt/clawshield/logging/oci/ebpf.yaml
+Restart=always
+RestartSec=10
+
+# Logging to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=clawshield-ebpf
+
+# Hardening
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log/clawshield
+
+[Install]
+WantedBy=multi-user.target

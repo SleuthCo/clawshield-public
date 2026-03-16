@@ -1,0 +1,18 @@
+/var/log/clawshield/audit-exports/*.jsonl {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+}
+
+/var/log/clawshield/audit-rotate.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    create 0640 root root
+}
