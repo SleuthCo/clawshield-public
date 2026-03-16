@@ -1,0 +1,32 @@
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 5
+banaction = iptables-multiport
+backend = auto
+
+[sshd]
+enabled = true
+port = ssh
+logpath = /var/log/auth.log
+maxretry = 5
+findtime = 300
+bantime = 3600
+
+[nginx-botsearch]
+enabled = true
+port = http,https
+logpath = /var/log/nginx-docker/access.log
+maxretry = 10
+findtime = 60
+bantime = 7200
+filter = nginx-botsearch
+
+[nginx-badbots]
+enabled = true
+port = http,https
+logpath = /var/log/nginx-docker/access.log
+maxretry = 5
+findtime = 60
+bantime = 86400
+filter = nginx-badbots

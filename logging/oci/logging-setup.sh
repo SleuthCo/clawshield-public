@@ -1,6 +1,6 @@
 #!/bin/bash
 # ClawShield OCI — Master logging infrastructure setup
-# Deploys: eBPF monitor, iptables rules, logrotate, audit DB rotation
+# Deploys: eBPF monitor, iptables rules, logrotate, audit DB rotation, fail2ban
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,13 +23,15 @@ if grep -q "Microsoft" /proc/version 2>/dev/null; then
     exit 1
 fi
 
-echo "[1/6] Checking prerequisites..."
+echo "[1/7] Checking prerequisites..."
 
 # Install missing packages
 PACKAGES_NEEDED=""
 command -v bpftrace &>/dev/null || PACKAGES_NEEDED="$PACKAGES_NEEDED bpftrace"
 dpkg -l bpfcc-tools &>/dev/null 2>&1 || PACKAGES_NEEDED="$PACKAGES_NEEDED bpfcc-tools python3-bpfcc"
 command -v sqlite3 &>/dev/null || PACKAGES_NEEDED="$PACKAGES_NEEDED sqlite3"
+command -v fail2ban-client &>/dev/null || PACKAGES_NEEDED="$PACKAGES_NEEDED fail2ban"
+command -v crontab &>/dev/null || PACKAGES_NEEDED="$PACKAGES_NEEDED cron"
 
 if [ -n "$PACKAGES_NEEDED" ]; then
     echo "  Installing: $PACKAGES_NEEDED"
@@ -45,7 +47,7 @@ echo "  Prerequisites OK"
 
 # --- eBPF Monitor ---
 echo ""
-echo "[2/6] Deploying eBPF security monitor..."
+echo "[2/7] Deploying eBPF security monitor..."
 
 # Copy files
 mkdir -p "$INSTALL_DIR/ebpf/cmd/clawshield-ebpf"
@@ -79,7 +81,7 @@ fi
 
 # --- iptables ---
 echo ""
-echo "[3/6] Configuring iptables firewall..."
+echo "[3/7] Configuring iptables firewall..."
 
 cp "$SCRIPT_DIR/iptables-setup.sh" "$INSTALL_DIR/logging/oci/iptables-setup.sh"
 chmod +x "$INSTALL_DIR/logging/oci/iptables-setup.sh"
@@ -89,7 +91,7 @@ echo "  iptables: CONFIGURED"
 
 # --- Logrotate ---
 echo ""
-echo "[4/6] Installing logrotate configs..."
+echo "[4/7] Installing logrotate configs..."
 
 for conf in "$SCRIPT_DIR/logrotate.d/"*; do
     name=$(basename "$conf")
@@ -103,7 +105,7 @@ echo "  Logrotate: CONFIGURED"
 
 # --- Audit DB Rotation ---
 echo ""
-echo "[5/6] Installing audit DB rotation cron..."
+echo "[5/7] Installing audit DB rotation cron..."
 
 cp "$SCRIPT_DIR/audit-db-rotate.sh" "$INSTALL_DIR/logging/oci/audit-db-rotate.sh"
 chmod +x "$INSTALL_DIR/logging/oci/audit-db-rotate.sh"
@@ -113,9 +115,27 @@ CRON_LINE="0 3 * * * $INSTALL_DIR/logging/oci/audit-db-rotate.sh"
 (crontab -l 2>/dev/null | grep -v "audit-db-rotate"; echo "$CRON_LINE") | crontab -
 echo "  Cron: 0 3 * * * audit-db-rotate.sh"
 
+# --- fail2ban ---
+echo ""
+echo "[6/7] Configuring fail2ban..."
+
+cp "$SCRIPT_DIR/fail2ban/jail.local" /etc/fail2ban/jail.local
+cp "$SCRIPT_DIR/fail2ban/filter.d/nginx-badbots.conf" /etc/fail2ban/filter.d/nginx-badbots.conf
+cp "$SCRIPT_DIR/fail2ban/filter.d/nginx-botsearch.conf" /etc/fail2ban/filter.d/nginx-botsearch.conf
+
+systemctl enable fail2ban
+systemctl restart fail2ban
+
+if systemctl is-active --quiet fail2ban; then
+    JAILS=$(fail2ban-client status 2>/dev/null | grep "Jail list" | sed 's/.*:\s*//')
+    echo "  fail2ban: RUNNING (jails: $JAILS)"
+else
+    echo "  WARNING: fail2ban failed to start. Check: journalctl -u fail2ban -n 20"
+fi
+
 # --- Nginx log bind mount check ---
 echo ""
-echo "[6/6] Checking nginx log bind mount..."
+echo "[7/7] Checking nginx log bind mount..."
 
 if docker inspect clawshield-nginx --format '{{range .Mounts}}{{.Destination}}:{{.Type}}{{println}}{{end}}' 2>/dev/null | grep -q "/var/log/nginx:volume"; then
     echo "  NOTE: nginx logs use a Docker named volume."
@@ -135,6 +155,7 @@ echo "================================================"
 echo ""
 echo "  Services:"
 echo "    clawshield-ebpf    $(systemctl is-active clawshield-ebpf 2>/dev/null || echo 'inactive')"
+echo "    fail2ban           $(systemctl is-active fail2ban 2>/dev/null || echo 'inactive')"
 echo ""
 echo "  Log Paths:"
 echo "    eBPF alerts:       /var/log/clawshield/ebpf.log"
