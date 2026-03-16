@@ -38,9 +38,10 @@ iptables -A INPUT -p icmp --icmp-type destination-unreachable -j ACCEPT
 iptables -A INPUT -p icmp --icmp-type time-exceeded -j ACCEPT
 
 # SSH — rate-limited with separate brute-force log
+# 15 new connections in 120 seconds = brute force (higher threshold for deploy scripts)
 iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --set --name SSH
-iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --update --seconds 60 --hitcount 6 --name SSH -j LOG --log-prefix "iptables-ssh-brute: " --log-level 4
-iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --update --seconds 60 --hitcount 6 --name SSH -j DROP
+iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --update --seconds 120 --hitcount 15 --name SSH -j LOG --log-prefix "iptables-ssh-brute: " --log-level 4
+iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --update --seconds 120 --hitcount 15 --name SSH -j DROP
 iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -j ACCEPT
 
 # HTTP/HTTPS
@@ -93,7 +94,7 @@ fi
 echo ""
 echo "=== iptables setup complete ==="
 echo "Log prefixes:"
-echo "  iptables-ssh-brute:     SSH brute force (>5 attempts/min)"
+echo "  iptables-ssh-brute:     SSH brute force (>15 attempts/2min)"
 echo "  iptables-drop:          General drops"
 echo "  iptables-reject:        General rejects"
 echo "  iptables-c2-outbound:   Suspicious outbound ports blocked"
