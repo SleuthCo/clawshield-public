@@ -1,0 +1,175 @@
+# ClawShield Permission System — Agent profiles, classification, DLP, sanitization
+# This file configures all 3 layers + M1-M4 mitigations for the permission system.
+
+agents:
+  anvil:                          # Friday equivalent (dev)
+    enabled: true
+    max_classification: CONFIDENTIAL
+    aliases: [friday]
+    platforms:
+      jira: [READ, WRITE]
+      confluence: [READ, WRITE]
+      openclaw: [READ, WRITE]
+
+  harbor:                         # Nimbus equivalent (cloud)
+    enabled: true
+    max_classification: INTERNAL
+    aliases: [nimbus]
+    platforms:
+      jira: [READ, WRITE]
+      confluence: [READ, WRITE]
+      google: [READ]
+      microsoft: [READ]
+      openclaw: [READ, WRITE]
+
+  shield:                         # Sentinel equivalent (security)
+    enabled: true
+    max_classification: CONFIDENTIAL
+    aliases: [sentinel]
+    platforms:
+      jira: [READ, WRITE]
+      openclaw: [READ, WRITE]
+
+  beacon:                         # Pepper equivalent (comms)
+    enabled: true
+    max_classification: INTERNAL
+    aliases: [pepper]
+    platforms:
+      confluence: [READ, WRITE]
+      slack: [READ, WRITE]
+      google: [READ, WRITE]
+      openclaw: [READ, WRITE]
+
+  lens:                           # Coda equivalent (research)
+    enabled: true
+    max_classification: CONFIDENTIAL
+    aliases: [coda]
+    platforms:
+      jira: [READ]
+      confluence: [READ, WRITE]
+      google: [READ]
+      openclaw: [READ, WRITE]
+
+  default:
+    enabled: true
+    max_classification: PUBLIC
+    platforms:
+      openclaw: [READ, WRITE]
+
+classification:
+  block_restricted: true
+  block_confidential: false
+  rules:
+    # RESTRICTED — API tokens, secrets, PII
+    - pattern: 'ATATT3x[A-Za-z0-9_-]{20,}'
+      level: RESTRICTED
+      label: Atlassian API token
+    - pattern: 'sk-ant-[A-Za-z0-9_-]{20,}'
+      level: RESTRICTED
+      label: Anthropic API key
+    - pattern: 'ghp_[A-Za-z0-9]{36,}'
+      level: RESTRICTED
+      label: GitHub PAT
+    - pattern: 'xoxb-[0-9]{10,}-[A-Za-z0-9]{20,}'
+      level: RESTRICTED
+      label: Slack bot token
+    - pattern: 'xoxp-[0-9]{10,}-[A-Za-z0-9]{20,}'
+      level: RESTRICTED
+      label: Slack user token
+    - pattern: 'glpat-[A-Za-z0-9_-]{20,}'
+      level: RESTRICTED
+      label: GitLab PAT
+    - pattern: 'AIza[A-Za-z0-9_-]{35}'
+      level: RESTRICTED
+      label: Google API key
+    - pattern: '(?i)(?:password|passwd|pwd)\s*[=:]\s*\S+'
+      level: RESTRICTED
+      label: password assignment
+    - pattern: '(?i)(?:secret|api_key|apikey|access_token)\s*[=:]\s*\S{8,}'
+      level: RESTRICTED
+      label: secret assignment
+    - pattern: '-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----'
+      level: RESTRICTED
+      label: private key
+    - pattern: '\b\d{3}-\d{2}-\d{4}\b'
+      level: RESTRICTED
+      label: SSN
+
+    # CONFIDENTIAL — phone numbers, CVEs, code blocks
+    - pattern: '(?i)\b(?:\+?1[-.]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b'
+      level: CONFIDENTIAL
+      label: phone number
+    - pattern: '(?i)CVE-\d{4}-\d{4,}'
+      level: CONFIDENTIAL
+      label: CVE reference
+    - pattern: '```[\s\S]{500,}```'
+      level: CONFIDENTIAL
+      label: large code block
+
+    # INTERNAL — email addresses, Jira issue keys
+    - pattern: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+      level: INTERNAL
+      label: email address
+    - pattern: '\b[A-Z]{2,10}-\d{1,6}\b'
+      level: INTERNAL
+      label: Jira issue key
+
+bridge_dlp:
+  mode: REDACT                    # OFF | REDACT | BLOCK
+  builtin_patterns:
+    - pattern: 'https?://\S+\.atlassian\.net/wiki/\S+'
+      label: Confluence URL
+      replacement: '[CONFLUENCE-URL]'
+    - pattern: 'https?://\S+\.atlassian\.net/browse/\S+'
+      label: Jira URL
+      replacement: '[JIRA-URL]'
+    - pattern: 'https?://\S+\.atlassian\.net/servicedesk/\S+'
+      label: JSM URL
+      replacement: '[JSM-URL]'
+    - pattern: 'https?://\S+\.atlassian\.\S+'
+      label: Atlassian URL
+      replacement: '[ATLASSIAN-URL]'
+    - pattern: 'https?://docs\.google\.com/\S+'
+      label: Google Docs URL
+      replacement: '[GOOGLE-DOCS-URL]'
+    - pattern: 'https?://drive\.google\.com/\S+'
+      label: Google Drive URL
+      replacement: '[GOOGLE-DRIVE-URL]'
+    - pattern: '\b[A-Z]{2,10}-\d{1,6}\b'
+      label: Jira issue key
+      replacement: '[JIRA-KEY]'
+  corporate_email_domains: []     # Override via CLAWSHIELD_CORPORATE_DOMAINS env var
+  custom_patterns: []
+  allowlist_phrases: []
+
+response_sanitizer:
+  max_response_length: 8192
+  injection_patterns:
+    - pattern: '(?i)ignore\s+(?:all\s+)?previous\s+instructions'
+      label: instruction override
+    - pattern: '(?i)you are now\b'
+      label: role reassignment
+    - pattern: '(?i)system:\s*you'
+      label: fake system prompt
+    - pattern: '(?i)new instructions:'
+      label: instruction injection
+    - pattern: '(?i)disregard\s+(?:all|any|the|previous|your)\s+\w*\s*(?:instructions?|rules?)'
+      label: instruction disregard
+    - pattern: '(?i)forget\s+(?:everything|all|your)\s+(?:you|instructions?|rules?)'
+      label: memory wipe
+    - pattern: '<\|im_start\|>\s*system'
+      label: ChatML injection
+    - pattern: '\[system\]\s*#'
+      label: system tag injection
+  cross_action_patterns:
+    - pattern: '(?i)\buse\s+the\s+[\w-]+\s+action\b'
+      label: action invocation
+    - pattern: '(?i)\binvoke\s+(?:the\s+)?(?:slack|github|jira|confluence|google|microsoft|gitlab)\b'
+      label: platform action invocation
+    - pattern: '(?i)(?:create|delete|send|post)\s+(?:a\s+)?(?:jira|confluence|slack|github)\s+(?:issue|page|message|pr)\b'
+      label: destructive cross-action
+    - pattern: '(?i)\bcall\s+(?:the\s+)?[\w-]+-action\b'
+      label: action call directive
+
+sessions:
+  ephemeral: true                 # M2: Force ephemeral sessions for all requests
